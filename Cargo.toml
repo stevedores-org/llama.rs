@@ -1,0 +1,19 @@
+[package]
+name = "llama-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Rust bindings and tools for llama.cpp"
+repository = "https://github.com/stevedores-org/llama.rs"
+license = "MIT"
+
+[dependencies]
+
+[dev-dependencies]
+
+[[bin]]
+name = "llama-cli"
+path = "src/bin/cli.rs"
+
+[lib]
+name = "llama"
+path = "src/lib.rs"
