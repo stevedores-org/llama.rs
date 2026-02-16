@@ -30,7 +30,11 @@ fn load_unaligned_safetensors() {
     }
 
     let header_len = header_bytes.len();
-    assert_eq!((8 + header_len) % 4, 1, "Header should end at unaligned offset");
+    assert_eq!(
+        (8 + header_len) % 4,
+        1,
+        "Header should end at unaligned offset"
+    );
 
     let mut file_bytes = Vec::new();
     // u64 header length (little endian)
@@ -55,7 +59,11 @@ fn load_unaligned_safetensors() {
     // This should succeed if fixed, or panic/error if not.
     // We expect it to SUCCEED with the fix.
     // Before fix, it panics.
-    assert!(result.is_ok(), "Loading unaligned safetensors failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Loading unaligned safetensors failed: {:?}",
+        result.err()
+    );
 
     let weights = result.unwrap();
     let tensor = weights.get("test").unwrap();

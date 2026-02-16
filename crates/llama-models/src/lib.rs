@@ -68,10 +68,7 @@ impl ModelWeights {
                 }
             };
 
-            tensors.insert(
-                name.to_string(),
-                Tensor { shape, data },
-            );
+            tensors.insert(name.to_string(), Tensor { shape, data });
         }
 
         Ok(Self { tensors })
