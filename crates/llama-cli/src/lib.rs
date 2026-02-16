@@ -8,7 +8,7 @@
 use llama_kv::{KVError, KVLayout, LayerKVCache};
 use llama_models::{apply_rope, attention_decode, mlp_swiglu, rms_norm, ModelError};
 use llama_sampling::{Sampler, SamplingError};
-use llama_tokenizer::{DecodingState, Tokenizer, TokenizerError, WhitespaceTokenizer};
+use llama_tokenizer::{Tokenizer, TokenizerError, WhitespaceTokenizer};
 
 /// Errors from the generation pipeline.
 #[derive(Debug, thiserror::Error)]
@@ -23,6 +23,8 @@ pub enum GenerateError {
     KVCache(#[from] KVError),
     #[error("empty prompt")]
     EmptyPrompt,
+    #[error("token ID {token_id} exceeds vocab size {vocab_size}")]
+    TokenOutOfRange { token_id: usize, vocab_size: usize },
 }
 
 /// Configuration for the tiny demo model.
@@ -269,7 +271,9 @@ pub struct GenerateResult {
 
 /// Run the full generation pipeline.
 ///
-/// tokenizer.encode(prompt) → prefill → decode loop → tokenizer.decode
+/// tokenizer.encode(prompt) → prefill → decode loop → byte-value decoding.
+/// Note: uses byte-value decoding for demo output since the WhitespaceTokenizer's
+/// vocab is dynamic and may not contain model-generated token IDs.
 pub fn generate(
     prompt: &str,
     max_tokens: usize,
@@ -286,8 +290,23 @@ pub fn generate(
         return Err(GenerateError::EmptyPrompt);
     }
 
-    // Convert i32 token IDs to usize (WhitespaceTokenizer uses sequential non-negative IDs)
-    let prompt_ids: Vec<usize> = prompt_ids_i32.iter().map(|&id| id as usize).collect();
+    // Convert i32 token IDs to usize, validating they are within vocab bounds.
+    let prompt_ids: Vec<usize> = prompt_ids_i32
+        .iter()
+        .map(|&id| {
+            let uid = usize::try_from(id).map_err(|_| GenerateError::TokenOutOfRange {
+                token_id: id as usize,
+                vocab_size: config.vocab_size,
+            })?;
+            if uid >= config.vocab_size {
+                return Err(GenerateError::TokenOutOfRange {
+                    token_id: uid,
+                    vocab_size: config.vocab_size,
+                });
+            }
+            Ok(uid)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     // 2. Create KV cache
     let mut kv_cache = LayerKVCache::new(
@@ -306,7 +325,6 @@ pub fn generate(
     // 5. Decode loop
     let mut generated_ids = prompt_ids.clone();
     let mut new_text = String::new();
-    let decode_state = DecodingState::new();
 
     for _ in 0..max_tokens {
         let next_token = sampler.sample(&logits)?;
@@ -320,7 +338,7 @@ pub fn generate(
         } else {
             '?'
         };
-        let chunk = format!("{}", token_char);
+        let chunk = token_char.to_string();
         if !new_text.is_empty() {
             new_text.push(' ');
         }
@@ -335,9 +353,6 @@ pub fn generate(
         // Forward decode step for next iteration
         logits = model.forward_decode(next_token, position, &mut kv_cache)?;
     }
-
-    // Also try proper tokenizer decode for the prompt
-    let _ = decode_state;
 
     Ok(GenerateResult {
         token_ids: generated_ids,

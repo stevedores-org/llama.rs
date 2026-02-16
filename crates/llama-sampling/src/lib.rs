@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn temperature_effect() {
-        let logits = vec![1.0, 2.0, 0.5];
+        let logits = [1.0, 2.0, 0.5];
 
         let high_temp: Vec<f32> = logits.iter().map(|l| l / 10.0).collect();
         let low_temp: Vec<f32> = logits.iter().map(|l| l / 0.1).collect();

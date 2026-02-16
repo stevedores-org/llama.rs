@@ -108,7 +108,12 @@ impl DecodingState {
         Ok(emitted)
     }
 
-    fn ensure_complete_utf8(&self) -> TokenizerResult<()> {
+    /// Finalize the decoding stream and validate that no incomplete UTF-8 bytes remain.
+    ///
+    /// Call this after the last `decode_token` to ensure the stream ended on a
+    /// valid UTF-8 boundary. Returns an error if there are pending bytes that
+    /// form an incomplete multi-byte sequence.
+    pub fn finalize(&self) -> TokenizerResult<()> {
         if self.pending_utf8.is_empty() {
             Ok(())
         } else {
@@ -347,8 +352,8 @@ impl Tokenizer for WhitespaceTokenizer {
         for &token in tokens {
             self.decode_token(token, &mut state)?;
         }
-        state.ensure_complete_utf8()?;
-        Ok(state.buffer.clone())
+        state.finalize()?;
+        Ok(state.buffer)
     }
 
     fn decode_token(&self, token: i32, state: &mut DecodingState) -> TokenizerResult<String> {
@@ -367,18 +372,46 @@ impl Tokenizer for WhitespaceTokenizer {
 impl Tokenizer for LoadedTokenizer {
     fn encode(&self, text: &str) -> TokenizerResult<Vec<i32>> {
         let mut out = Vec::new();
-        for word in text.split_whitespace() {
-            let id = self
-                .reverse_vocab
-                .get(word)
-                .copied()
-                .or(self.unknown_id)
-                .ok_or_else(|| {
-                    TokenizerError::EncodingError(format!(
-                        "token '{word}' missing from loaded vocabulary"
-                    ))
-                })?;
-            out.push(id);
+
+        // Greedy longest-match subword encoding over the full input string.
+        let len = text.len();
+        let mut i = 0;
+        while i < len {
+            let mut best_id: Option<i32> = None;
+            let mut best_len: usize = 0;
+
+            let mut j = i + 1;
+            while j <= len {
+                if !text.is_char_boundary(j) {
+                    j += 1;
+                    continue;
+                }
+
+                let piece = &text[i..j];
+                if let Some(&id) = self.reverse_vocab.get(piece) {
+                    best_id = Some(id);
+                    best_len = j - i;
+                }
+
+                j += 1;
+            }
+
+            if let Some(id) = best_id {
+                out.push(id);
+                i += best_len;
+            } else if let Some(unknown_id) = self.unknown_id {
+                out.push(unknown_id);
+                if let Some(ch) = text[i..].chars().next() {
+                    i += ch.len_utf8();
+                } else {
+                    break;
+                }
+            } else {
+                let snippet: String = text[i..].chars().take(16).collect();
+                return Err(TokenizerError::EncodingError(format!(
+                    "input text starting with '{snippet}' missing from loaded vocabulary"
+                )));
+            }
         }
         Ok(out)
     }
@@ -388,14 +421,15 @@ impl Tokenizer for LoadedTokenizer {
         for &token in tokens {
             self.decode_token(token, &mut state)?;
         }
-        state.ensure_complete_utf8()?;
-        Ok(state.buffer.clone())
+        state.finalize()?;
+        Ok(state.buffer)
     }
 
     fn decode_token(&self, token: i32, state: &mut DecodingState) -> TokenizerResult<String> {
         let piece = self.decode_piece(token)?;
-        let prepend_space = state.emitted_any && parse_byte_piece(piece).is_none();
-        let emitted = state.append_bytes(&piece_to_bytes(piece, prepend_space))?;
+        // For loaded HF/SentencePiece-style tokenizers, tokens encode whitespace
+        // explicitly (via markers or literal spaces). Concatenate pieces as-is.
+        let emitted = state.append_bytes(&piece_to_bytes(piece, false))?;
         state.emitted_any = true;
         Ok(emitted)
     }
@@ -410,14 +444,29 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn temp_file(name: &str, contents: &[u8]) -> std::path::PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("llama-tokenizer-{name}-{nanos}"));
-        fs::write(&path, contents).unwrap();
-        path
+    /// RAII temp file that auto-deletes on drop.
+    struct TempFile(std::path::PathBuf);
+
+    impl TempFile {
+        fn new(name: &str, contents: &[u8]) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("llama-tokenizer-{name}-{nanos}"));
+            fs::write(&path, contents).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
     }
 
     #[test]
@@ -506,25 +555,32 @@ mod tests {
             "vocab": {
               "<unk>": 0,
               "hello": 1,
+              " ": 3,
               "world": 2
             }
           }
         }"#;
-        let path = temp_file("tokenizer.json", json.as_bytes());
-        let tok = LoadedTokenizer::from_tokenizer_json_path(&path).unwrap();
-        assert_eq!(tok.vocab_size(), 3);
-        assert_eq!(tok.encode("hello world").unwrap(), vec![1, 2]);
+        let file = TempFile::new("tokenizer.json", json.as_bytes());
+        let tok = LoadedTokenizer::from_tokenizer_json_path(file.path()).unwrap();
+        assert_eq!(tok.vocab_size(), 4);
+        // Greedy longest-match: "hello" → 1, " " → 3, "world" → 2
+        assert_eq!(tok.encode("hello world").unwrap(), vec![1, 3, 2]);
     }
 
     #[test]
     fn loaded_tokenizer_reads_sentencepiece_assets() {
-        let model_path = temp_file("sp.model", b"fake-model-binary");
-        let vocab_path = temp_file("sp.vocab", b"<unk>\t0\nhello\t-1.2\nworld\t-2.3\n");
+        let model_file = TempFile::new("sp.model", b"fake-model-binary");
+        let vocab_file = TempFile::new(
+            "sp.vocab",
+            "<unk>\t0\nhello\t-1.2\n▁\t-1.5\nworld\t-2.3\n".as_bytes(),
+        );
 
-        let tok = LoadedTokenizer::from_sentencepiece_files(&model_path, &vocab_path).unwrap();
-        assert_eq!(tok.vocab_size(), 3);
-        assert_eq!(tok.encode("hello world").unwrap(), vec![1, 2]);
-        assert_eq!(tok.decode(&[1, 2]).unwrap(), "hello world");
+        let tok = LoadedTokenizer::from_sentencepiece_files(model_file.path(), vocab_file.path())
+            .unwrap();
+        assert_eq!(tok.vocab_size(), 4);
+        assert_eq!(tok.encode("hello").unwrap(), vec![1]);
+        assert_eq!(tok.encode("world").unwrap(), vec![3]);
+        assert_eq!(tok.decode(&[1, 3]).unwrap(), "helloworld");
     }
 
     #[test]
@@ -536,13 +592,15 @@ mod tests {
               "<unk>": 0,
               "hello": 1,
               "世界": 2,
-              "🙂": 3
+              "🙂": 3,
+              " ": 4
             }
           }
         }"#;
         let tok = LoadedTokenizer::from_tokenizer_json_str(json).unwrap();
         let input = "hello 世界 🙂";
         let encoded = tok.encode(input).unwrap();
+        assert_eq!(encoded, vec![1, 4, 2, 4, 3]);
         let decoded = tok.decode(&encoded).unwrap();
         assert_eq!(decoded, input);
     }
