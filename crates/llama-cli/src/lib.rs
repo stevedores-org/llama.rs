@@ -189,14 +189,7 @@ impl TinyModel {
         let x_norm2 = rms_norm(&x_after_attn, &self.norm2_weight, c.norm_eps)?;
 
         // 9. MLP + residual
-        let mlp_out = mlp_swiglu(
-            &x_norm2,
-            &self.w_gate,
-            &self.w_up,
-            &self.w_down,
-            d,
-            c.d_ff,
-        )?;
+        let mlp_out = mlp_swiglu(&x_norm2, &self.w_gate, &self.w_up, &self.w_down, d, c.d_ff)?;
         let hidden: Vec<f32> = x_after_attn
             .iter()
             .zip(mlp_out.iter())
@@ -240,21 +233,14 @@ impl TinyModel {
                 let keys = &kv_cache.k[..seq_len * d];
                 let values = &kv_cache.v[..seq_len * d];
 
-                let attn_out =
-                    attention_decode(&q, keys, values, seq_len, c.n_heads, c.head_dim)?;
+                let attn_out = attention_decode(&q, keys, values, seq_len, c.n_heads, c.head_dim)?;
                 let attn_proj = Self::matvec(&attn_out, &self.w_o, d, d);
                 let x_after_attn: Vec<f32> =
                     x.iter().zip(attn_proj.iter()).map(|(a, b)| a + b).collect();
 
                 let x_norm2 = rms_norm(&x_after_attn, &self.norm2_weight, c.norm_eps)?;
-                let mlp_out = mlp_swiglu(
-                    &x_norm2,
-                    &self.w_gate,
-                    &self.w_up,
-                    &self.w_down,
-                    d,
-                    c.d_ff,
-                )?;
+                let mlp_out =
+                    mlp_swiglu(&x_norm2, &self.w_gate, &self.w_up, &self.w_down, d, c.d_ff)?;
                 let hidden: Vec<f32> = x_after_attn
                     .iter()
                     .zip(mlp_out.iter())
