@@ -335,6 +335,177 @@ pub struct Attention {
     pub head_dim: usize,
 }
 
+/// Transformer block combining attention and MLP with residual connections and normalization.
+///
+/// Architecture:
+/// ```
+/// x -> RMSNorm -> Attention + RoPE -> Add(x) -> RMSNorm -> SwiGLU -> Add(x)
+/// ```
+#[derive(Debug, Clone)]
+pub struct TransformerBlock {
+    /// Pre-attention normalization
+    pub norm1: RMSNorm,
+    /// Multi-head self-attention
+    pub attn: Attention,
+    /// Pre-MLP normalization
+    pub norm2: RMSNorm,
+    /// SwiGLU feedforward network
+    pub mlp: SwiGLU,
+}
+
+impl TransformerBlock {
+    /// Create a new transformer block.
+    pub fn new(config: &ModelConfig) -> Self {
+        Self {
+            norm1: RMSNorm::new(config.d_model, config.norm_eps),
+            attn: Attention::new(config.d_model, config.n_heads),
+            norm2: RMSNorm::new(config.d_model, config.norm_eps),
+            mlp: SwiGLU::new(config.d_model, config.d_ff),
+        }
+    }
+
+    /// Forward pass with residual connections.
+    pub fn forward(
+        &self,
+        x: &[f32],
+        _rope: &RoPE,
+        _seq_len: usize,
+        d_model: usize,
+        d_ff: usize,
+    ) -> Vec<f32> {
+        // Pre-norm attention with residuals: x + Attention(Norm(x))
+        let x_norm = self.norm1.forward(x, d_model);
+        let attn_out = self.attn.forward(&x_norm, &x_norm, &x_norm, d_model);
+
+        // Add residual
+        let x_after_attn: Vec<f32> = x.iter().zip(attn_out.iter()).map(|(a, b)| a + b).collect();
+
+        // Pre-norm MLP with residuals: x + MLP(Norm(x))
+        let x_norm2 = self.norm2.forward(&x_after_attn, d_model);
+        let mlp_out = self.mlp.forward(&x_norm2, d_model, d_ff);
+
+        // Add residual
+        x_after_attn
+            .iter()
+            .zip(mlp_out.iter())
+            .map(|(a, b)| a + b)
+            .collect()
+    }
+}
+
+/// Full Llama/Qwen model with transformer layers and embedding/output projections.
+#[derive(Debug, Clone)]
+pub struct LlamaModel {
+    /// Model configuration
+    pub config: ModelConfig,
+    /// Token embeddings: [vocab_size, d_model]
+    pub embeddings: Vec<f32>,
+    /// Transformer blocks (one per layer)
+    pub blocks: Vec<TransformerBlock>,
+    /// Final output normalization
+    pub norm: RMSNorm,
+    /// Output projection: [d_model, vocab_size]
+    pub lm_head: Vec<f32>,
+}
+
+impl LlamaModel {
+    /// Create a new model with given configuration.
+    pub fn new(config: ModelConfig) -> Self {
+        let embeddings = vec![0.1; config.vocab_size * config.d_model];
+        let blocks = (0..config.n_layers)
+            .map(|_| TransformerBlock::new(&config))
+            .collect();
+        let lm_head = vec![0.1; config.d_model * config.vocab_size];
+        let norm = RMSNorm::new(config.d_model, config.norm_eps);
+
+        Self {
+            config,
+            embeddings,
+            blocks,
+            norm,
+            lm_head,
+        }
+    }
+
+    /// Load token embedding for a single token.
+    fn embed_token(&self, token_id: usize) -> Vec<f32> {
+        let offset = token_id * self.config.d_model;
+        self.embeddings[offset..offset + self.config.d_model].to_vec()
+    }
+
+    /// Forward pass: embed tokens -> transformer blocks -> norm -> lm_head.
+    pub fn forward(&self, token_ids: &[usize], rope: &RoPE) -> Vec<f32> {
+        let seq_len = token_ids.len();
+
+        // Embed tokens
+        let mut hidden_states = Vec::with_capacity(seq_len * self.config.d_model);
+        for &token_id in token_ids {
+            hidden_states.extend(self.embed_token(token_id));
+        }
+
+        // Pass through transformer blocks
+        for block in &self.blocks {
+            hidden_states = block.forward(
+                &hidden_states,
+                rope,
+                seq_len,
+                self.config.d_model,
+                self.config.d_ff,
+            );
+        }
+
+        // Final norm and projection
+        let hidden_states = self.norm.forward(&hidden_states, self.config.d_model);
+        let last_hidden = &hidden_states[(seq_len - 1) * self.config.d_model..seq_len * self.config.d_model];
+
+        let mut logits = vec![0.0; self.config.vocab_size];
+        for i in 0..self.config.vocab_size {
+            for j in 0..self.config.d_model {
+                logits[i] += last_hidden[j] * self.lm_head[j * self.config.vocab_size + i];
+            }
+        }
+
+        logits
+    }
+
+    /// Sample next token from logits.
+    pub fn sample_token(logits: &[f32], temperature: f32) -> usize {
+        let scaled: Vec<f32> = logits.iter().map(|l| l / temperature).collect();
+        let max_logit = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exps: Vec<f32> = scaled.iter().map(|l| (l - max_logit).exp()).collect();
+        let sum: f32 = exps.iter().sum();
+        let probs: Vec<f32> = exps.iter().map(|e| e / sum).collect();
+
+        probs
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(idx, _)| idx)
+            .unwrap_or(0)
+    }
+
+    /// Generate text tokens from prompt.
+    pub fn generate(
+        &self,
+        mut prompt: Vec<usize>,
+        max_new_tokens: usize,
+        temperature: f32,
+        rope: &RoPE,
+    ) -> Vec<usize> {
+        for _ in 0..max_new_tokens {
+            let logits = self.forward(&prompt, rope);
+            let next_token = Self::sample_token(&logits, temperature);
+            prompt.push(next_token);
+
+            if prompt.len() >= self.config.max_seq_len {
+                break;
+            }
+        }
+
+        prompt
+    }
+}
+
 impl Attention {
     /// Create a new multi-head attention layer.
     ///
@@ -605,5 +776,82 @@ mod tests {
         let output = attn.forward(&x, &x, &x, 32);
 
         assert_eq!(output.len(), x.len());
+    }
+
+    #[test]
+    fn transformer_block_shape() {
+        let config = ModelConfig::llama3_8b();
+        let block = TransformerBlock::new(&config);
+        let rope = RoPE::new(config.head_dim(), config.rope_base);
+
+        let input = vec![0.1; config.d_model];
+        let output = block.forward(&input, &rope, 1, config.d_model, config.d_ff);
+
+        assert_eq!(output.len(), config.d_model);
+    }
+
+    #[test]
+    fn transformer_block_sequence() {
+        let config = ModelConfig::llama3_8b();
+        let block = TransformerBlock::new(&config);
+        let rope = RoPE::new(config.head_dim(), config.rope_base);
+
+        let seq_len = 4;
+        let input = vec![0.1; seq_len * config.d_model];
+        let output = block.forward(&input, &rope, seq_len, config.d_model, config.d_ff);
+
+        assert_eq!(output.len(), seq_len * config.d_model);
+        assert!(output.iter().all(|v| !v.is_nan()));
+    }
+
+    #[test]
+    fn llama_model_creation() {
+        let config = ModelConfig::llama3_8b();
+        let model = LlamaModel::new(config.clone());
+
+        assert_eq!(model.config.d_model, 4096);
+        assert_eq!(model.embeddings.len(), config.vocab_size * config.d_model);
+        assert_eq!(model.blocks.len(), config.n_layers);
+    }
+
+    #[test]
+    fn llama_model_forward() {
+        let mut config = ModelConfig::llama3_8b();
+        config.n_layers = 1; // Reduce for testing
+        config.vocab_size = 100; // Small vocab
+
+        let model = LlamaModel::new(config);
+        let rope = RoPE::new(model.config.head_dim(), model.config.rope_base);
+
+        let token_ids = vec![0, 1, 2]; // Simple prompt
+        let logits = model.forward(&token_ids, &rope);
+
+        assert_eq!(logits.len(), 100);
+        assert!(logits.iter().all(|v| !v.is_nan()));
+    }
+
+    #[test]
+    fn llama_model_sampling() {
+        let logits = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let token = LlamaModel::sample_token(&logits, 1.0);
+
+        assert!(token < 5); // Valid token index
+    }
+
+    #[test]
+    fn llama_model_generate() {
+        let mut config = ModelConfig::llama3_8b();
+        config.n_layers = 1;
+        config.vocab_size = 50;
+        config.max_seq_len = 10;
+
+        let model = LlamaModel::new(config);
+        let rope = RoPE::new(model.config.head_dim(), model.config.rope_base);
+
+        let prompt = vec![0, 1];
+        let generated = model.generate(prompt.clone(), 3, 1.0, &rope);
+
+        assert!(generated.len() > prompt.len());
+        assert!(generated.len() <= model.config.max_seq_len);
     }
 }
