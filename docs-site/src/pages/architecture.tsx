@@ -1,185 +1,116 @@
-import type { FC } from "hono/jsx";
-import { Layout } from "../components/Layout";
+import Layout from "@/components/Layout";
+import CodeBlock from "@/components/CodeBlock";
+import Callout from "@/components/Callout";
 
-export const ArchitecturePage: FC = () => (
-  <Layout title="Architecture" activePath="/architecture">
-    <h1>Architecture</h1>
-    <p class="lead">
-      A modular, resilient, and accelerated inference runtime in Rust.
-      Built with oxidizedMLX for tensor/Metal acceleration, oxidizedRAG for
-      retrieval, and oxidizedgraph for agent orchestration.
-    </p>
+export default function Architecture() {
+  return (
+    <Layout>
+      <h1 className="text-3xl font-extrabold tracking-tight mb-2">Architecture</h1>
+      <p className="text-lg text-zinc-400 mb-10">
+        A modular, resilient, and accelerated inference runtime in Rust.
+      </p>
 
-    <h2>Design Principles</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Principle</th>
-          <th>How</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><strong>Narrow waist</strong></td>
-          <td>
-            <code>LlamaEngine</code> trait is the single stable interface all
-            consumers depend on.
-          </td>
-        </tr>
-        <tr>
-          <td><strong>Quarantined unsafe</strong></td>
-          <td>
-            Unsafe code is wrapped in typed, safe APIs with a small surface area.
-          </td>
-        </tr>
-        <tr>
-          <td><strong>API stability</strong></td>
-          <td>
-            Public interfaces are narrow, versioned, and testable.
-          </td>
-        </tr>
-        <tr>
-          <td><strong>Resilience by default</strong></td>
-          <td>
-            Cancellation, timeouts, backpressure, bounded memory.
-          </td>
-        </tr>
-        <tr>
-          <td><strong>Performance is a feature</strong></td>
-          <td>
-            Avoid unnecessary copies, allow zero/low-copy IO (mmap), expose
-            tuning knobs.
-          </td>
-        </tr>
-      </tbody>
-    </table>
+      <h2 className="text-xl font-bold tracking-tight mt-10 mb-4 pb-2 border-b border-zinc-800/60">Design Principles</h2>
+      <div className="border border-zinc-800 rounded-xl overflow-hidden">
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="border-b border-zinc-800 bg-zinc-900/50">
+              <th className="text-left px-5 py-3 text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Principle</th>
+              <th className="text-left px-5 py-3 text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">How</th>
+            </tr>
+          </thead>
+          <tbody className="text-zinc-400">
+            <tr className="border-b border-zinc-800/60"><td className="px-5 py-3 text-zinc-200 font-medium">Narrow waist</td><td className="px-5 py-3">LlamaEngine trait is the single stable interface</td></tr>
+            <tr className="border-b border-zinc-800/60"><td className="px-5 py-3 text-zinc-200 font-medium">Quarantined unsafe</td><td className="px-5 py-3">Unsafe code wrapped in typed, safe APIs</td></tr>
+            <tr className="border-b border-zinc-800/60"><td className="px-5 py-3 text-zinc-200 font-medium">API stability</td><td className="px-5 py-3">Public interfaces are narrow, versioned, and testable</td></tr>
+            <tr className="border-b border-zinc-800/60"><td className="px-5 py-3 text-zinc-200 font-medium">Resilience by default</td><td className="px-5 py-3">Cancellation, timeouts, backpressure, bounded memory</td></tr>
+            <tr><td className="px-5 py-3 text-zinc-200 font-medium">Performance</td><td className="px-5 py-3">Zero-copy IO (mmap), avoid unnecessary copies, tuning knobs</td></tr>
+          </tbody>
+        </table>
+      </div>
 
-    <h2>Crate Layout</h2>
-    <div class="arch-diagram">
+      <h2 className="text-xl font-bold tracking-tight mt-10 mb-3 pb-2 border-b border-zinc-800/60">The Narrow Waist: LlamaEngine</h2>
+      <p className="text-zinc-400 text-[15px] mb-4">
+        Everything plugs into the LlamaEngine trait. Methods take{" "}
+        <code className="font-mono text-orange-300/90 text-[13px]">&self</code> to allow
+        shared access across sessions and concurrent inference.
+      </p>
+      <CodeBlock title="llama-engine/src/lib.rs">{`pub trait LlamaEngine: Send + Sync {
+    fn load_model(&self, spec: &ModelSpec) -> Result<ModelHandle>;
+    fn tokenize(&self, text: &str) -> Result<Vec<i32>>;
+    fn detokenize(&self, tokens: &[i32]) -> Result<String>;
+    fn prefill(&self, session: &mut Session, tokens: &[i32]) -> Result<PrefillResult>;
+    fn decode(&self, session: &mut Session) -> Result<TokenStream>;
+    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>>;
+}`}</CodeBlock>
+
+      <h2 className="text-xl font-bold tracking-tight mt-10 mb-3 pb-2 border-b border-zinc-800/60">Crate Layout</h2>
+      <pre className="bg-zinc-900 border border-zinc-800 rounded-xl px-5 py-4 overflow-x-auto text-[12px] leading-relaxed font-mono text-zinc-400 my-4">
 {`llama.rs/
   crates/
-    `}<span class="highlight">llama-engine/</span>{`        # narrow-waist trait + streaming API
+    `}<span className="text-orange-400 font-semibold">llama-engine/</span>{`        # narrow-waist trait + streaming API
     llama-models/        # model architectures (Llama/Qwen/Mistral)
-    `}<span class="highlight">llama-runtime/</span>{`       # execution: oxidizedMLX, backend selection
+    `}<span className="text-orange-400 font-semibold">llama-runtime/</span>{`       # execution: oxidizedMLX, backend selection
     llama-tokenizer/     # tokenizers + chat templates
     llama-sampling/      # samplers + penalties + stop conditions
     llama-kv/            # KV cache layouts + paging/eviction`}
-    </div>
-    <p>
-      Future crates (not yet scaffolded):
-    </p>
-    <table>
-      <thead>
-        <tr>
-          <th>Crate</th>
-          <th>Purpose</th>
-          <th>Story</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><code>llama-server</code></td>
-          <td>OpenAI-compatible HTTP API</td>
-          <td>LLAMA-009</td>
-        </tr>
-        <tr>
-          <td><code>llama-cli</code></td>
-          <td>CLI runner for debug + bench</td>
-          <td>Milestone A</td>
-        </tr>
-        <tr>
-          <td><code>llama-rag</code></td>
-          <td>oxidizedRAG adapter</td>
-          <td>LLAMA-011</td>
-        </tr>
-        <tr>
-          <td><code>llama-agents</code></td>
-          <td>oxidizedgraph agent nodes</td>
-          <td>LLAMA-012</td>
-        </tr>
-      </tbody>
-    </table>
+      </pre>
 
-    <h2>The Narrow Waist: LlamaEngine</h2>
-    <p>
-      Everything plugs into the <code>LlamaEngine</code> trait, defined in{" "}
-      <code>llama-engine</code>:
-    </p>
-    <pre>
-      <code>
-        <span class="kw">pub trait</span>{" "}<span class="ty">LlamaEngine</span>{": Send + Sync {\n"}
-        {"    "}<span class="kw">fn</span>{" "}<span class="fn">load_model</span>{"(&self, spec: &ModelSpec) -> Result<ModelHandle>;\n"}
-        {"    "}<span class="kw">fn</span>{" "}<span class="fn">tokenize</span>{"(&self, text: &str) -> Result<Vec<i32>>;\n"}
-        {"    "}<span class="kw">fn</span>{" "}<span class="fn">detokenize</span>{"(&self, tokens: &[i32]) -> Result<String>;\n"}
-        {"    "}<span class="kw">fn</span>{" "}<span class="fn">prefill</span>{"(&self, session: &mut Session, tokens: &[i32]) -> Result<PrefillResult>;\n"}
-        {"    "}<span class="kw">fn</span>{" "}<span class="fn">decode</span>{"(&self, session: &mut Session) -> Result<TokenStream>;\n"}
-        {"    "}<span class="kw">fn</span>{" "}<span class="fn">embed</span>{"(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>>;\n"}
-        {"}\n"}
-      </code>
-    </pre>
-    <p>
-      Methods take <code>&self</code> (not <code>&mut self</code>) to allow
-      shared access across multiple sessions and enable concurrent inference.
-      Backends are responsible for their own internal synchronization.
-    </p>
-
-    <h2>Acceleration Strategy</h2>
-    <p>
-      The runtime exposes capability discovery rather than hard-coding platform
-      rules:
-    </p>
-    <pre>
-      <code>
-        <span class="cm">{"// Feature gates control backend compilation\n"}</span>
-        <span class="kw">{"#[cfg(feature = "}</span><span class="st">{'"cpu"'}</span><span class="kw">{")]"}</span>{"\n"}
-        <span class="ty">{"Cpu"}</span>{",\n"}
-        <span class="kw">{"#[cfg(feature = "}</span><span class="st">{'"metal"'}</span><span class="kw">{")]"}</span>{"\n"}
-        <span class="ty">{"Metal"}</span>{",\n\n"}
-        <span class="cm">{"// Kernel availability matrix validates op support at startup\n"}</span>
-        <span class="kw">let</span>{" matrix = KernelMatrix::probe();\n"}
-        <span class="kw">let</span>{" selector = BackendSelector::auto()?;\n"}
-      </code>
-    </pre>
-    <div class="callout">
-      <span class="callout-icon">&#x1F6E1;</span>
-      <div>
-        <strong>Backend parity gate:</strong> Metal cannot become the default
-        backend unless parity tests pass against the CPU reference
-        implementation.
+      <h2 className="text-xl font-bold tracking-tight mt-10 mb-3 pb-2 border-b border-zinc-800/60">Future Crates</h2>
+      <div className="border border-zinc-800 rounded-xl overflow-hidden">
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="border-b border-zinc-800 bg-zinc-900/50">
+              <th className="text-left px-5 py-3 text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Crate</th>
+              <th className="text-left px-5 py-3 text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Purpose</th>
+              <th className="text-left px-5 py-3 text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Story</th>
+            </tr>
+          </thead>
+          <tbody className="text-zinc-400">
+            <tr className="border-b border-zinc-800/60"><td className="px-5 py-3 font-mono text-zinc-300">llama-server</td><td className="px-5 py-3">OpenAI-compatible HTTP API</td><td className="px-5 py-3">LLAMA-009</td></tr>
+            <tr className="border-b border-zinc-800/60"><td className="px-5 py-3 font-mono text-zinc-300">llama-cli</td><td className="px-5 py-3">CLI runner for debug + bench</td><td className="px-5 py-3">Milestone A</td></tr>
+            <tr className="border-b border-zinc-800/60"><td className="px-5 py-3 font-mono text-zinc-300">llama-rag</td><td className="px-5 py-3">oxidizedRAG adapter</td><td className="px-5 py-3">LLAMA-011</td></tr>
+            <tr><td className="px-5 py-3 font-mono text-zinc-300">llama-agents</td><td className="px-5 py-3">oxidizedgraph agent nodes</td><td className="px-5 py-3">LLAMA-012</td></tr>
+          </tbody>
+        </table>
       </div>
-    </div>
 
-    <h2>Session Lifecycle</h2>
-    <p>
-      Sessions hold runtime state (KV cache, token history) that persists
-      across prefill and decode phases. Multiple sessions can exist
-      simultaneously with independent state.
-    </p>
-    <table>
-      <thead>
-        <tr>
-          <th>Property</th>
-          <th>Design</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>Cancellation</td>
-          <td>Cooperative. Dropping a <code>TokenStream</code> terminates graph execution.</td>
-        </tr>
-        <tr>
-          <td>Memory</td>
-          <td>Bounded. Context size and KV cache behavior are explicit and configurable.</td>
-        </tr>
-        <tr>
-          <td>Lifecycle</td>
-          <td>Session ID maps to KV cache lifecycle (freed or archived on completion).</td>
-        </tr>
-        <tr>
-          <td>Cloning</td>
-          <td>Intentionally not <code>Clone</code> &mdash; duplicating KV cache state is not cheap.</td>
-        </tr>
-      </tbody>
-    </table>
-  </Layout>
-);
+      <h2 className="text-xl font-bold tracking-tight mt-10 mb-3 pb-2 border-b border-zinc-800/60">Acceleration Strategy</h2>
+      <p className="text-zinc-400 text-[15px] mb-4">
+        The runtime exposes capability discovery rather than hard-coding platform rules.
+        Feature gates control backend compilation; a kernel matrix validates op support at startup.
+      </p>
+      <CodeBlock>{`// Feature gates control backend compilation
+#[cfg(feature = "cpu")]  Cpu,
+#[cfg(feature = "metal")] Metal,
+
+// Kernel availability matrix probes op support
+let matrix = KernelMatrix::probe();
+let selector = BackendSelector::auto()?;`}</CodeBlock>
+
+      <Callout icon="🛡️">
+        <strong className="text-zinc-100">Backend parity gate:</strong> Metal cannot
+        become the default backend unless parity tests pass against the CPU
+        reference implementation.
+      </Callout>
+
+      <h2 className="text-xl font-bold tracking-tight mt-10 mb-3 pb-2 border-b border-zinc-800/60">Session Lifecycle</h2>
+      <div className="border border-zinc-800 rounded-xl overflow-hidden">
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="border-b border-zinc-800 bg-zinc-900/50">
+              <th className="text-left px-5 py-3 text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Property</th>
+              <th className="text-left px-5 py-3 text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Design</th>
+            </tr>
+          </thead>
+          <tbody className="text-zinc-400">
+            <tr className="border-b border-zinc-800/60"><td className="px-5 py-3 text-zinc-200 font-medium">Cancellation</td><td className="px-5 py-3">Cooperative. Dropping a TokenStream terminates graph execution.</td></tr>
+            <tr className="border-b border-zinc-800/60"><td className="px-5 py-3 text-zinc-200 font-medium">Memory</td><td className="px-5 py-3">Bounded. Context size and KV cache behavior are explicit and configurable.</td></tr>
+            <tr className="border-b border-zinc-800/60"><td className="px-5 py-3 text-zinc-200 font-medium">Lifecycle</td><td className="px-5 py-3">Session ID maps to KV cache lifecycle (freed or archived on completion).</td></tr>
+            <tr><td className="px-5 py-3 text-zinc-200 font-medium">Cloning</td><td className="px-5 py-3">Intentionally not Clone — duplicating KV cache state is not cheap.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </Layout>
+  );
+}

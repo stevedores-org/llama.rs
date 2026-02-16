@@ -1,58 +1,34 @@
-import { Hono } from "hono";
-import { IndexPage } from "./pages/index";
-import { GettingStartedPage } from "./pages/getting-started";
-import { ArchitecturePage } from "./pages/architecture";
-import { RoadmapPage } from "./pages/roadmap";
-import { LlamaEnginePage } from "./pages/crates/llama-engine";
-import { LlamaTokenizerPage } from "./pages/crates/llama-tokenizer";
-import { LlamaModelsPage } from "./pages/crates/llama-models";
-import { LlamaSamplingPage } from "./pages/crates/llama-sampling";
-import { LlamaKvPage } from "./pages/crates/llama-kv";
-import { LlamaRuntimePage } from "./pages/crates/llama-runtime";
-import {
-  OxidizedMLXPage,
-  OxidizedRAGPage,
-  OxidizedGraphPage,
-} from "./pages/ecosystem";
+import { Routes, Route } from "react-router-dom";
+import Home from "./pages/Home";
+import GettingStarted from "./pages/GettingStarted";
+import Architecture from "./pages/Architecture";
+import Roadmap from "./pages/Roadmap";
+import LlamaEngine from "./pages/crates/LlamaEngine";
+import LlamaTokenizer from "./pages/crates/LlamaTokenizer";
+import LlamaModels from "./pages/crates/LlamaModels";
+import LlamaSampling from "./pages/crates/LlamaSampling";
+import LlamaKv from "./pages/crates/LlamaKv";
+import LlamaRuntime from "./pages/crates/LlamaRuntime";
+import OxidizedMLX from "./pages/ecosystem/OxidizedMLX";
+import OxidizedRAG from "./pages/ecosystem/OxidizedRAG";
+import OxidizedGraph from "./pages/ecosystem/OxidizedGraph";
 
-const BASE = "/llama-rs";
-
-export const app = new Hono();
-
-const page = (Component: () => any) => (c: any) =>
-  c.html("<!DOCTYPE html>" + Component());
-
-app.get(`${BASE}/`, page(IndexPage));
-app.get(`${BASE}/getting-started`, page(GettingStartedPage));
-app.get(`${BASE}/architecture`, page(ArchitecturePage));
-app.get(`${BASE}/roadmap`, page(RoadmapPage));
-
-app.get(`${BASE}/crates/llama-engine`, page(LlamaEnginePage));
-app.get(`${BASE}/crates/llama-tokenizer`, page(LlamaTokenizerPage));
-app.get(`${BASE}/crates/llama-models`, page(LlamaModelsPage));
-app.get(`${BASE}/crates/llama-sampling`, page(LlamaSamplingPage));
-app.get(`${BASE}/crates/llama-kv`, page(LlamaKvPage));
-app.get(`${BASE}/crates/llama-runtime`, page(LlamaRuntimePage));
-
-app.get(`${BASE}/ecosystem/oxidized-mlx`, page(OxidizedMLXPage));
-app.get(`${BASE}/ecosystem/oxidized-rag`, page(OxidizedRAGPage));
-app.get(`${BASE}/ecosystem/oxidized-graph`, page(OxidizedGraphPage));
-
-// Redirect bare /llama-rs to /llama-rs/
-app.get("/llama-rs", (c) => c.redirect(`${BASE}/`));
-
-export const routes = [
-  "/",
-  "/getting-started",
-  "/architecture",
-  "/roadmap",
-  "/crates/llama-engine",
-  "/crates/llama-tokenizer",
-  "/crates/llama-models",
-  "/crates/llama-sampling",
-  "/crates/llama-kv",
-  "/crates/llama-runtime",
-  "/ecosystem/oxidized-mlx",
-  "/ecosystem/oxidized-rag",
-  "/ecosystem/oxidized-graph",
-];
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<Home />} />
+      <Route path="/getting-started" element={<GettingStarted />} />
+      <Route path="/architecture" element={<Architecture />} />
+      <Route path="/roadmap" element={<Roadmap />} />
+      <Route path="/crates/llama-engine" element={<LlamaEngine />} />
+      <Route path="/crates/llama-tokenizer" element={<LlamaTokenizer />} />
+      <Route path="/crates/llama-models" element={<LlamaModels />} />
+      <Route path="/crates/llama-sampling" element={<LlamaSampling />} />
+      <Route path="/crates/llama-kv" element={<LlamaKv />} />
+      <Route path="/crates/llama-runtime" element={<LlamaRuntime />} />
+      <Route path="/ecosystem/oxidized-mlx" element={<OxidizedMLX />} />
+      <Route path="/ecosystem/oxidized-rag" element={<OxidizedRAG />} />
+      <Route path="/ecosystem/oxidized-graph" element={<OxidizedGraph />} />
+    </Routes>
+  );
+}
