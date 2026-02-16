@@ -8,25 +8,19 @@
 //! - Streaming decoding with UTF-8 handling
 //! - Chat template support (future)
 
+use std::collections::HashMap;
+use std::sync::RwLock;
+
 /// Error type for tokenization operations.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TokenizerError {
+    #[error("Invalid token ID: {0}")]
     InvalidToken(i32),
+    #[error("Encoding error: {0}")]
     EncodingError(String),
+    #[error("Decoding error: {0}")]
     DecodingError(String),
 }
-
-impl std::fmt::Display for TokenizerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TokenizerError::InvalidToken(id) => write!(f, "Invalid token ID: {}", id),
-            TokenizerError::EncodingError(msg) => write!(f, "Encoding error: {}", msg),
-            TokenizerError::DecodingError(msg) => write!(f, "Decoding error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for TokenizerError {}
 
 pub type TokenizerResult<T> = std::result::Result<T, TokenizerError>;
 
@@ -50,6 +44,8 @@ pub trait Tokenizer: Send + Sync {
 #[derive(Debug, Clone, Default)]
 pub struct DecodingState {
     buffer: String,
+    pending_utf8: Vec<u8>,
+    emitted_any: bool,
 }
 
 impl DecodingState {
@@ -63,6 +59,8 @@ impl DecodingState {
 
     pub fn clear(&mut self) {
         self.buffer.clear();
+        self.pending_utf8.clear();
+        self.emitted_any = false;
     }
 }
 
@@ -73,31 +71,34 @@ impl DecodingState {
 /// - Deterministic
 /// - Used for golden tests before real tokenizer.json loading
 pub struct WhitespaceTokenizer {
-    vocab: std::collections::HashMap<i32, String>,
-    reverse_vocab: std::collections::HashMap<String, i32>,
+    state: RwLock<VocabState>,
+}
+
+#[derive(Debug, Default)]
+struct VocabState {
+    vocab: HashMap<i32, String>,
+    reverse_vocab: HashMap<String, i32>,
+    next_id: i32,
 }
 
 impl WhitespaceTokenizer {
     pub fn new() -> Self {
         Self {
-            vocab: std::collections::HashMap::new(),
-            reverse_vocab: std::collections::HashMap::new(),
+            state: RwLock::new(VocabState::default()),
         }
     }
 
-    /// Build vocabulary from a text sample or predefined set.
-    /// For testing, we auto-build from the first encode call.
-    fn ensure_vocab(&mut self, text: &str) {
-        let words: Vec<&str> = text.split_whitespace().collect();
-        let mut next_id = self.vocab.len() as i32;
+    fn decode_id(&self, token: i32) -> TokenizerResult<String> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| TokenizerError::DecodingError("tokenizer lock poisoned".to_string()))?;
 
-        for word in words {
-            if !self.reverse_vocab.contains_key(word) {
-                self.reverse_vocab.insert(word.to_string(), next_id);
-                self.vocab.insert(next_id, word.to_string());
-                next_id += 1;
-            }
-        }
+        state
+            .vocab
+            .get(&token)
+            .cloned()
+            .ok_or(TokenizerError::InvalidToken(token))
     }
 }
 
@@ -109,45 +110,50 @@ impl Default for WhitespaceTokenizer {
 
 impl Tokenizer for WhitespaceTokenizer {
     fn encode(&self, text: &str) -> TokenizerResult<Vec<i32>> {
-        let mut tokenizer = WhitespaceTokenizer::new();
-        tokenizer.ensure_vocab(text);
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| TokenizerError::EncodingError("tokenizer lock poisoned".to_string()))?;
 
-        Ok(text
-            .split_whitespace()
-            .enumerate()
-            .map(|(i, _)| i as i32)
-            .collect())
+        let mut ids = Vec::new();
+        for word in text.split_whitespace() {
+            let id = if let Some(id) = state.reverse_vocab.get(word) {
+                *id
+            } else {
+                let id = state.next_id;
+                state.next_id += 1;
+                state.reverse_vocab.insert(word.to_string(), id);
+                state.vocab.insert(id, word.to_string());
+                id
+            };
+            ids.push(id);
+        }
+
+        Ok(ids)
     }
 
     fn decode(&self, tokens: &[i32]) -> TokenizerResult<String> {
-        let mut tokenizer = WhitespaceTokenizer::new();
-
-        // For reference: rebuild vocab from token IDs
-        // In a real impl, vocab is loaded from assets
-        for &token_id in tokens {
-            if token_id >= 0 && token_id < tokens.len() as i32 {
-                tokenizer
-                    .vocab
-                    .entry(token_id)
-                    .or_insert_with(|| format!("word_{}", token_id));
-            }
+        let mut words = Vec::with_capacity(tokens.len());
+        for &id in tokens {
+            words.push(self.decode_id(id)?);
         }
-
-        Ok(tokens
-            .iter()
-            .filter_map(|&id| tokenizer.vocab.get(&id).cloned())
-            .collect::<Vec<_>>()
-            .join(" "))
+        Ok(words.join(" "))
     }
 
-    fn decode_token(&self, _token: i32, state: &mut DecodingState) -> TokenizerResult<String> {
-        // For whitespace tokenizer, just add a placeholder
-        state.buffer.push(' ');
-        Ok(state.buffer.clone())
+    fn decode_token(&self, token: i32, state: &mut DecodingState) -> TokenizerResult<String> {
+        let word = self.decode_id(token)?;
+        let emitted = if state.emitted_any {
+            format!(" {}", word)
+        } else {
+            word
+        };
+        state.buffer.push_str(&emitted);
+        state.emitted_any = true;
+        Ok(emitted)
     }
 
     fn vocab_size(&self) -> usize {
-        1000 // Placeholder for reference tokenizer
+        self.state.read().map(|s| s.vocab.len()).unwrap_or(0)
     }
 }
 
@@ -189,11 +195,7 @@ mod tests {
         let original = "hello world test";
         let encoded = tok.encode(original).unwrap();
         let decoded = tok.decode(&encoded).unwrap();
-
-        let original_words: Vec<&str> = original.split_whitespace().collect();
-        let decoded_words: Vec<&str> = decoded.split_whitespace().collect();
-
-        assert_eq!(original_words.len(), decoded_words.len());
+        assert_eq!(decoded, original);
     }
 
     #[test]
@@ -205,10 +207,32 @@ mod tests {
 
     #[test]
     fn streaming_decode_state() {
+        let tok: &dyn Tokenizer = &WhitespaceTokenizer::new();
+        let encoded = tok.encode("hello world").unwrap();
         let mut state = DecodingState::new();
+
         assert_eq!(state.buffer(), "");
+        assert_eq!(tok.decode_token(encoded[0], &mut state).unwrap(), "hello");
+        assert_eq!(state.buffer(), "hello");
+        assert_eq!(tok.decode_token(encoded[1], &mut state).unwrap(), " world");
+        assert_eq!(state.buffer(), "hello world");
 
         state.clear();
         assert_eq!(state.buffer(), "");
+    }
+
+    #[test]
+    fn decode_invalid_token_errors() {
+        let tok = WhitespaceTokenizer::new();
+        tok.encode("hello").unwrap();
+        assert_eq!(tok.decode(&[999]).unwrap_err(), TokenizerError::InvalidToken(999));
+    }
+
+    #[test]
+    fn vocab_size_reflects_built_vocab() {
+        let tok = WhitespaceTokenizer::new();
+        assert_eq!(tok.vocab_size(), 0);
+        tok.encode("hello world hello").unwrap();
+        assert_eq!(tok.vocab_size(), 2);
     }
 }
