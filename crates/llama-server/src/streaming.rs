@@ -3,27 +3,30 @@
 //! Implements the OpenAI-compatible streaming protocol:
 //! - Each chunk is sent as `data: {json}\n\n`
 //! - Final message is `data: [DONE]\n\n`
+//! - Stream stops immediately when the client disconnects (via CancellationToken).
 
 use axum::response::sse::{Event, Sse};
 use chrono::Utc;
 use futures::stream::Stream;
 use llama_engine::Session;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::models::streaming::{ChatChoiceDelta, ChatCompletionChunk, ChatDelta};
+use crate::session_manager::SessionGuard;
 use crate::state::AppState;
 
 /// Create an SSE stream that generates chat completion chunks.
 ///
-/// The stream yields:
-/// 1. An initial chunk with `role: "assistant"` (no content)
-/// 2. Content chunks as tokens are decoded
-/// 3. A final chunk with `finish_reason: "stop"`
-/// 4. A `[DONE]` sentinel event
+/// The stream owns the `SessionGuard`. When the client disconnects, axum drops
+/// the stream, which drops the guard, which cancels the token and frees the
+/// session slot + semaphore permit.
 pub fn stream_chat_completion(
     state: AppState,
     prompt_tokens: Vec<llama_engine::TokenId>,
     max_tokens: usize,
+    cancel: CancellationToken,
+    guard: SessionGuard,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
     let request_id = format!("chatcmpl-{}", Uuid::new_v4());
     let created = Utc::now().timestamp() as u64;
@@ -31,6 +34,9 @@ pub fn stream_chat_completion(
     let engine = state.engine.clone();
 
     let stream = async_stream::stream! {
+        // Keep guard alive for the lifetime of the stream.
+        let _guard = guard;
+
         // Initial chunk: role announcement
         let role_chunk = ChatCompletionChunk {
             id: request_id.clone(),
@@ -54,6 +60,12 @@ pub fn stream_chat_completion(
 
         let mut finish_reason = "stop";
         for i in 0..max_tokens {
+            // Check cancellation before each decode step.
+            if cancel.is_cancelled() {
+                tracing::debug!("stream cancelled by client disconnect");
+                return;
+            }
+
             let result = match engine.decode(&mut session) {
                 Ok(r) => r,
                 Err(_) => {
@@ -95,25 +107,27 @@ pub fn stream_chat_completion(
             }
         }
 
-        // Final chunk: finish reason
-        let final_chunk = ChatCompletionChunk {
-            id: request_id.clone(),
-            object: "chat.completion.chunk".to_string(),
-            created,
-            model: model.clone(),
-            choices: vec![ChatChoiceDelta {
-                index: 0,
-                delta: ChatDelta {
-                    role: None,
-                    content: None,
-                },
-                finish_reason: Some(finish_reason.to_string()),
-            }],
-        };
-        yield Ok(Event::default().data(serde_json::to_string(&final_chunk).unwrap()));
+        // Final chunk: finish reason (only if not cancelled)
+        if !cancel.is_cancelled() {
+            let final_chunk = ChatCompletionChunk {
+                id: request_id.clone(),
+                object: "chat.completion.chunk".to_string(),
+                created,
+                model: model.clone(),
+                choices: vec![ChatChoiceDelta {
+                    index: 0,
+                    delta: ChatDelta {
+                        role: None,
+                        content: None,
+                    },
+                    finish_reason: Some(finish_reason.to_string()),
+                }],
+            };
+            yield Ok(Event::default().data(serde_json::to_string(&final_chunk).unwrap()));
 
-        // [DONE] sentinel
-        yield Ok(Event::default().data("[DONE]"));
+            // [DONE] sentinel
+            yield Ok(Event::default().data("[DONE]"));
+        }
     };
 
     Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default())

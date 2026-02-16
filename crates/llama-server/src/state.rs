@@ -1,5 +1,6 @@
 //! Application state and configuration.
 
+use crate::session_manager::SessionManager;
 use llama_engine::LlamaEngine;
 use std::sync::Arc;
 
@@ -10,6 +11,8 @@ pub struct AppState {
     pub engine: Arc<dyn LlamaEngine>,
     /// Server configuration.
     pub config: ServerConfig,
+    /// Session lifecycle manager (concurrency + cancellation).
+    pub sessions: Arc<SessionManager>,
 }
 
 /// Server configuration parameters.
@@ -21,4 +24,6 @@ pub struct ServerConfig {
     pub max_tokens: usize,
     /// Default temperature for sampling.
     pub default_temperature: f32,
+    /// Maximum concurrent inference sessions.
+    pub max_concurrent_sessions: usize,
 }

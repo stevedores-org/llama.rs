@@ -2,19 +2,26 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use llama_runtime::MockEngine;
-use llama_server::{create_router, AppState, ServerConfig};
+use llama_server::{create_router, AppState, ServerConfig, SessionManager};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
 
 fn test_state() -> AppState {
+    test_state_with_concurrency(64)
+}
+
+fn test_state_with_concurrency(max_concurrent: usize) -> AppState {
+    let sessions = SessionManager::new(max_concurrent);
     AppState {
         engine: Arc::new(MockEngine::new()),
         config: ServerConfig {
             model_name: "test-model".to_string(),
             max_tokens: 10,
             default_temperature: 0.7,
+            max_concurrent_sessions: max_concurrent,
         },
+        sessions,
     }
 }
 
@@ -30,7 +37,7 @@ fn json_request(uri: &str, body: Value) -> Request<Body> {
 // -- Health endpoint --
 
 #[tokio::test]
-async fn health_returns_ok() {
+async fn health_returns_ok_with_session_stats() {
     let app = create_router(test_state());
     let req = Request::builder()
         .uri("/health")
@@ -38,6 +45,12 @@ async fn health_returns_ok() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "ok");
+    assert!(json["sessions"]["max_concurrent"].as_u64().unwrap() > 0);
+    assert_eq!(json["sessions"]["active"], 0);
 }
 
 // -- Chat completions (non-streaming) --
@@ -209,4 +222,88 @@ async fn invalid_json_returns_error() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert!(resp.status().is_client_error());
+}
+
+// -- Session management (LLAMA-010) --
+
+#[tokio::test]
+async fn concurrency_limit_returns_503_when_at_capacity() {
+    // Create a server with concurrency limit of 1
+    let state = test_state_with_concurrency(1);
+    let sessions = state.sessions.clone();
+
+    // Manually acquire the one available slot
+    let _guard = sessions.acquire(uuid::Uuid::new_v4()).await;
+    assert_eq!(sessions.available_permits(), 0);
+
+    // Now a request should get 503
+    let app = create_router(state);
+    let req = json_request(
+        "/v1/chat/completions",
+        json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "the quick brown fox jumps"}],
+            "max_tokens": 1
+        }),
+    );
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn session_guard_frees_slot_on_drop() {
+    let sessions = SessionManager::new(2);
+
+    assert_eq!(sessions.available_permits(), 2);
+    assert_eq!(sessions.active_count().await, 0);
+
+    {
+        let _guard1 = sessions.acquire(uuid::Uuid::new_v4()).await;
+        assert_eq!(sessions.available_permits(), 1);
+
+        let _guard2 = sessions.acquire(uuid::Uuid::new_v4()).await;
+        assert_eq!(sessions.available_permits(), 0);
+        assert_eq!(sessions.active_count().await, 2);
+    }
+
+    // Guards dropped — slots freed
+    // Small delay for the async cleanup task to run
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(sessions.available_permits(), 2);
+    assert_eq!(sessions.active_count().await, 0);
+}
+
+#[tokio::test]
+async fn cancellation_token_is_cancelled_on_guard_drop() {
+    let sessions = SessionManager::new(4);
+    let cancel;
+    {
+        let guard = sessions.acquire(uuid::Uuid::new_v4()).await;
+        cancel = guard.cancellation_token();
+        assert!(!cancel.is_cancelled());
+    }
+    // Guard dropped — cancel token should fire
+    assert!(cancel.is_cancelled());
+}
+
+#[tokio::test]
+async fn health_endpoint_shows_session_stats() {
+    let state = test_state_with_concurrency(8);
+    let sessions = state.sessions.clone();
+
+    // Acquire a session
+    let _guard = sessions.acquire(uuid::Uuid::new_v4()).await;
+
+    let app = create_router(state);
+    let req = Request::builder()
+        .uri("/health")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["sessions"]["max_concurrent"], 8);
+    assert_eq!(json["sessions"]["active"], 1);
+    assert_eq!(json["sessions"]["available"], 7);
 }

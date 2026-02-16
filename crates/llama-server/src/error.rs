@@ -15,6 +15,9 @@ pub enum ServerError {
 
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+
+    #[error("server at capacity")]
+    ServiceUnavailable,
 }
 
 impl IntoResponse for ServerError {
@@ -32,6 +35,11 @@ impl IntoResponse for ServerError {
             ServerError::LlamaError(LlamaError::Inference(msg)) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "server_error", msg)
             }
+            ServerError::ServiceUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "server_error",
+                "Server at capacity, try again later".to_string(),
+            ),
         };
 
         let body = Json(json!({
