@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 llama-engine = { path = "../llama-engine" }
+llama-kv = { path = "../llama-kv" }
 llama-tokenizer = { path = "../llama-tokenizer" }
 llama-sampling = { path = "../llama-sampling" }
 thiserror.workspace = true
