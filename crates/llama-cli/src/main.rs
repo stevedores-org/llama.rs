@@ -25,7 +25,7 @@ enum Command {
         #[arg(short, long, default_value_t = 42)]
         seed: u64,
 
-        /// Sampling temperature (higher = more random).
+        /// Sampling temperature (higher = more random, must be > 0).
         #[arg(short, long, default_value_t = 1.0)]
         temperature: f32,
     },
@@ -40,14 +40,20 @@ fn main() {
             max_tokens,
             seed,
             temperature,
-        } => match generate(&prompt, max_tokens, seed, temperature) {
-            Ok(result) => {
-                println!("{}", result.text);
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
+        } => {
+            if temperature <= 0.0 {
+                eprintln!("error: temperature must be positive (got {temperature})");
                 std::process::exit(1);
             }
-        },
+            match generate(&prompt, max_tokens, seed, temperature) {
+                Ok(result) => {
+                    println!("{}", result.text);
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
     }
 }
