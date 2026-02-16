@@ -7,11 +7,8 @@ members = [
     "crates/llama-runtime",
     "crates/llama-sampling",
     "crates/llama-kv",
-<<<<<<< codex/featM
     "crates/llama-agents",
-=======
     "crates/llama-cli",
->>>>>>> develop
 ]
 
 [workspace.package]
