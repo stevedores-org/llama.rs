@@ -7,7 +7,7 @@
 
 use llama_kv::{KVError, KVLayout, LayerKVCache};
 use llama_models::{apply_rope, attention_decode, mlp_swiglu, rms_norm, ModelError};
-use llama_sampling::{Sampler, SamplingError};
+use llama_sampling::{Sampler, SamplingConfig, SamplingError, SamplingStrategy};
 use llama_tokenizer::{Tokenizer, TokenizerError, WhitespaceTokenizer};
 
 /// Errors from the generation pipeline.
@@ -23,6 +23,8 @@ pub enum GenerateError {
     KVCache(#[from] KVError),
     #[error("empty prompt")]
     EmptyPrompt,
+    #[error("token ID {token_id} exceeds vocab size {vocab_size}")]
+    TokenOutOfRange { token_id: usize, vocab_size: usize },
 }
 
 /// Configuration for the tiny demo model.
@@ -126,10 +128,16 @@ impl TinyModel {
     }
 
     /// Embed a token ID into a d_model vector.
-    fn embed(&self, token_id: usize) -> Vec<f32> {
+    fn embed(&self, token_id: usize) -> Result<Vec<f32>, GenerateError> {
         let d = self.config.d_model;
+        if token_id >= self.config.vocab_size {
+            return Err(GenerateError::TokenOutOfRange {
+                token_id,
+                vocab_size: self.config.vocab_size,
+            });
+        }
         let offset = token_id * d;
-        self.embeddings[offset..offset + d].to_vec()
+        Ok(self.embeddings[offset..offset + d].to_vec())
     }
 
     /// Matrix-vector multiply: x @ W where W is [in_dim, out_dim] row-major.
@@ -158,7 +166,7 @@ impl TinyModel {
         let d = c.d_model;
 
         // 1. Embed token
-        let x = self.embed(token_id);
+        let x = self.embed(token_id)?;
 
         // 2. Pre-attention norm
         let x_norm = rms_norm(&x, &self.norm1_weight, c.norm_eps)?;
@@ -216,7 +224,7 @@ impl TinyModel {
         let mut last_logits = vec![0.0; c.vocab_size];
 
         for (pos, &tok) in token_ids.iter().enumerate() {
-            let x = self.embed(tok);
+            let x = self.embed(tok)?;
             let x_norm = rms_norm(&x, &self.norm1_weight, c.norm_eps)?;
 
             let mut q = Self::matvec(&x_norm, &self.w_q, d, d);
@@ -227,7 +235,10 @@ impl TinyModel {
 
             kv_cache.append_token(&k, &v)?;
 
-            // Only compute full attention + MLP for last token (optimization)
+            // Only compute full attention + MLP for last token (optimization).
+            // This is valid for a single-layer model because K,V are linear
+            // projections of the input embeddings and don't depend on attention
+            // output. Multi-layer models would need full computation per token.
             if pos == token_ids.len() - 1 {
                 let seq_len = kv_cache.seq_len;
                 let keys = &kv_cache.k[..seq_len * d];
@@ -267,7 +278,11 @@ pub struct GenerateResult {
 
 /// Run the full generation pipeline.
 ///
-/// tokenizer.encode(prompt) → prefill → decode loop → tokenizer.decode
+/// tokenizer.encode(prompt) → prefill → decode loop → byte-value decoding.
+///
+/// Note: uses byte-value decoding for demo output since the `WhitespaceTokenizer`
+/// vocabulary is dynamic (built at encode time) and cannot decode model-generated
+/// token IDs. A fixed byte-level tokenizer would be needed for true round-trip.
 pub fn generate(
     prompt: &str,
     max_tokens: usize,
@@ -284,8 +299,23 @@ pub fn generate(
         return Err(GenerateError::EmptyPrompt);
     }
 
-    // Convert i32 token IDs to usize (WhitespaceTokenizer uses sequential non-negative IDs)
-    let prompt_ids: Vec<usize> = prompt_ids_i32.iter().map(|&id| id as usize).collect();
+    // Convert i32 token IDs to usize, validating they are within vocab bounds.
+    let prompt_ids: Vec<usize> = prompt_ids_i32
+        .iter()
+        .map(|&id| {
+            let uid = usize::try_from(id).map_err(|_| GenerateError::TokenOutOfRange {
+                token_id: id as usize,
+                vocab_size: config.vocab_size,
+            })?;
+            if uid >= config.vocab_size {
+                return Err(GenerateError::TokenOutOfRange {
+                    token_id: uid,
+                    vocab_size: config.vocab_size,
+                });
+            }
+            Ok(uid)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     // 2. Create KV cache
     let mut kv_cache = LayerKVCache::new(
@@ -296,30 +326,37 @@ pub fn generate(
     );
 
     // 3. Create sampler
-    let mut sampler = Sampler::new().with_temperature(temperature).with_seed(seed);
+    let mut sampler = Sampler::new(SamplingConfig {
+        strategy: SamplingStrategy::Stochastic,
+        temperature,
+        seed,
+        ..SamplingConfig::default()
+    })?;
 
     // 4. Prefill: process prompt tokens
     let mut logits = model.forward_prefill(&prompt_ids, &mut kv_cache)?;
 
     // 5. Decode loop
     let mut generated_ids = prompt_ids.clone();
+    let mut history: Vec<i32> = prompt_ids.iter().map(|&id| id as i32).collect();
     let mut new_text = String::new();
 
     for _ in 0..max_tokens {
-        let next_token = sampler.sample(&logits)?;
+        let next_token_i32 = sampler.sample(&logits, &history)?;
+        let next_token = next_token_i32 as usize;
         generated_ids.push(next_token);
+        history.push(next_token_i32);
 
-        // For the demo, decode generated tokens as byte values
+        // Decode generated tokens as byte values (demo model uses 256-token vocab).
         let token_char = if next_token < 128 {
             char::from(next_token as u8)
         } else {
             '?'
         };
-        let chunk = format!("{}", token_char);
         if !new_text.is_empty() {
             new_text.push(' ');
         }
-        new_text.push_str(&chunk);
+        new_text.push(token_char);
 
         // Check max sequence length
         let position = generated_ids.len() - 1;

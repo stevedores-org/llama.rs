@@ -17,5 +17,3 @@ llama-tokenizer = { path = "../llama-tokenizer" }
 llama-sampling = { path = "../llama-sampling" }
 llama-kv = { path = "../llama-kv" }
 thiserror.workspace = true
-
-[dev-dependencies]
