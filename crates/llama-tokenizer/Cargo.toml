@@ -7,4 +7,3 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-llama-engine = { path = "../llama-engine" }

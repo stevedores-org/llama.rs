@@ -7,8 +7,6 @@ members = [
     "crates/llama-runtime",
     "crates/llama-sampling",
     "crates/llama-kv",
-    "crates/llama-cli",
-    "crates/llama-rag",
 ]
 
 [workspace.package]
@@ -20,4 +18,3 @@ repository = "https://github.com/stevedores-org/llama.rs"
 [workspace.dependencies]
 thiserror = "2"
 uuid = { version = "1.6", features = ["v4"] }
-clap = { version = "4.4", features = ["derive"] }
