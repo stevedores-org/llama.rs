@@ -8,7 +8,7 @@
 use llama_kv::{KVError, KVLayout, LayerKVCache};
 use llama_models::{apply_rope, attention_decode, mlp_swiglu, rms_norm, ModelError};
 use llama_sampling::{Sampler, SamplingError};
-use llama_tokenizer::{Tokenizer, TokenizerError, WhitespaceTokenizer};
+use llama_tokenizer::{DecodingState, Tokenizer, TokenizerError, WhitespaceTokenizer};
 
 /// Errors from the generation pipeline.
 #[derive(Debug, thiserror::Error)]
@@ -225,7 +225,9 @@ impl TinyModel {
 
             apply_rope(&mut q, &mut k, pos, c.n_heads, c.head_dim, c.rope_base)?;
 
-            kv_cache.append_token(&k, &v)?;
+            kv_cache
+                .append_token(&k, &v)
+                .map_err(|e| ModelError::Shape(format!("kv append failed: {e}")))?;
 
             // Only compute full attention + MLP for last token (optimization)
             if pos == token_ids.len() - 1 {
@@ -304,7 +306,7 @@ pub fn generate(
     // 5. Decode loop
     let mut generated_ids = prompt_ids.clone();
     let mut new_text = String::new();
-    let mut decode_state = DecodingState::new();
+    let decode_state = DecodingState::new();
 
     for _ in 0..max_tokens {
         let next_token = sampler.sample(&logits)?;
