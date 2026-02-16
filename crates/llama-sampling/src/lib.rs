@@ -185,6 +185,12 @@ fn softmax_with_temperature(logits: &[f32], temperature: f32) -> Result<Vec<f32>
 
     let scaled: Vec<f32> = logits.iter().map(|&x| x / temperature).collect();
     let max_val = scaled.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+
+    if max_val == f32::NEG_INFINITY {
+        // All logits are -inf, return uniform distribution
+        return Ok(vec![1.0 / logits.len() as f32; logits.len()]);
+    }
+
     let mut exps: Vec<f32> = scaled.iter().map(|&x| (x - max_val).exp()).collect();
     normalize_probs(&mut exps);
     Ok(exps)
@@ -375,6 +381,15 @@ mod tests {
         let history = vec![1];
         // token 1 becomes 0.5 after penalty, so token 0 should win.
         assert_eq!(sampler.sample(&logits, &history).unwrap(), 0);
+    }
+
+    #[test]
+    fn softmax_handles_all_inf() {
+        let logits = vec![f32::NEG_INFINITY, f32::NEG_INFINITY];
+        let probs = softmax_with_temperature(&logits, 1.0).unwrap();
+        assert_eq!(probs.len(), 2);
+        assert_eq!(probs[0], 0.5);
+        assert_eq!(probs[1], 0.5);
     }
 
     #[test]
