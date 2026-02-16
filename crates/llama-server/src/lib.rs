@@ -9,9 +9,11 @@ pub mod error;
 pub mod handlers;
 pub mod models;
 pub mod server;
+pub mod session_manager;
 pub mod state;
 pub mod streaming;
 
 pub use error::ServerError;
 pub use server::{create_router, run_server};
+pub use session_manager::SessionManager;
 pub use state::{AppState, ServerConfig};
