@@ -232,6 +232,70 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_unicode_words() {
+        let tok = WhitespaceTokenizer::new();
+        // Unicode words separated by spaces round-trip correctly
+        let original = "café naïve résumé";
+        let encoded = tok.encode(original).unwrap();
+        let decoded = tok.decode(&encoded).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn roundtrip_emoji() {
+        let tok = WhitespaceTokenizer::new();
+        let original = "hello 🦀 world 🚀";
+        let encoded = tok.encode(original).unwrap();
+        assert_eq!(encoded.len(), 4);
+        let decoded = tok.decode(&encoded).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn roundtrip_cjk() {
+        let tok = WhitespaceTokenizer::new();
+        // CJK characters as whitespace-delimited tokens
+        let original = "你好 世界";
+        let encoded = tok.encode(original).unwrap();
+        assert_eq!(encoded.len(), 2);
+        let decoded = tok.decode(&encoded).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn encode_tabs_and_newlines_treated_as_whitespace() {
+        let tok = WhitespaceTokenizer::new();
+        // split_whitespace treats tabs and newlines as delimiters
+        let ids = tok.encode("hello\tworld\ntest").unwrap();
+        assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn deterministic_encoding() {
+        // Same input always produces same token IDs
+        let tok = WhitespaceTokenizer::new();
+        let ids1 = tok.encode("hello world test").unwrap();
+        let ids2 = tok.encode("hello world test").unwrap();
+        assert_eq!(ids1, ids2);
+    }
+
+    #[test]
+    fn streaming_decode_multiple_tokens() {
+        let tok: &dyn Tokenizer = &WhitespaceTokenizer::new();
+        let encoded = tok.encode("the quick brown fox").unwrap();
+        let mut state = DecodingState::new();
+
+        let mut accumulated = String::new();
+        for &id in &encoded {
+            let chunk = tok.decode_token(id, &mut state).unwrap();
+            accumulated.push_str(&chunk);
+        }
+
+        assert_eq!(accumulated, "the quick brown fox");
+        assert_eq!(state.buffer(), "the quick brown fox");
+    }
+
+    #[test]
     fn vocab_size_reflects_built_vocab() {
         let tok = WhitespaceTokenizer::new();
         assert_eq!(tok.vocab_size(), 0);

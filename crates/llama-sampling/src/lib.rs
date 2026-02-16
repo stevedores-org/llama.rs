@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn temperature_effect() {
-        let logits = vec![1.0, 2.0, 0.5];
+        let logits = [1.0, 2.0, 0.5];
 
         let high_temp: Vec<f32> = logits.iter().map(|l| l / 10.0).collect();
         let low_temp: Vec<f32> = logits.iter().map(|l| l / 0.1).collect();
@@ -426,6 +426,38 @@ mod tests {
 
         let token = sampler.sample(&logits).unwrap();
         assert!(token < logits.len());
+    }
+
+    #[test]
+    fn edge_topk_1_equals_greedy() {
+        let logits = vec![1.0, 5.0, 2.0, 3.0];
+        // top_k=1 should always select the argmax token (index 1)
+        let mut sampler = Sampler::new().with_top_k(1).with_seed(42);
+        for _ in 0..10 {
+            let token = sampler.sample(&logits).unwrap();
+            assert_eq!(token, 1, "top_k=1 should always select argmax");
+        }
+    }
+
+    #[test]
+    fn edge_temperature_zero_returns_error() {
+        // temperature=0.0 is explicitly invalid per the sampler contract
+        let logits = vec![1.0, 2.0, 3.0];
+        let mut sampler = Sampler::new().with_temperature(0.0);
+        assert_eq!(
+            sampler.sample(&logits),
+            Err(SamplingError::InvalidTemperature)
+        );
+    }
+
+    #[test]
+    fn edge_negative_temperature_returns_error() {
+        let logits = vec![1.0, 2.0];
+        let mut sampler = Sampler::new().with_temperature(-1.0);
+        assert_eq!(
+            sampler.sample(&logits),
+            Err(SamplingError::InvalidTemperature)
+        );
     }
 
     #[test]

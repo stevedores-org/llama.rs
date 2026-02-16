@@ -142,7 +142,7 @@ mod tests {
         let enc1 = tok1.encode(text).expect("encode 1 failed");
 
         let tok2 = WhitespaceTokenizer::new();
-        let enc2 = tok2.encode(text).expect("encode 2 failed");
+        let _enc2 = tok2.encode(text).expect("encode 2 failed");
 
         // Same text may not produce same token IDs across different tokenizer instances
         // because they have separate vocab tables. But within the same instance, should be consistent.

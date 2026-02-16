@@ -376,6 +376,32 @@ mod tests {
     }
 
     #[test]
+    fn kvcache_slice_update_correct_index() {
+        // Verify that write_prefill followed by append puts data at correct positions
+        let mut cache = LayerKVCache::new(4, 1, 2, KVLayout::BySequence);
+
+        // Prefill 2 tokens
+        let k_seq = [1.0, 2.0, 3.0, 4.0]; // 2 tokens × 1 head × 2 dim
+        let v_seq = [10.0, 20.0, 30.0, 40.0];
+        cache.write_prefill(&k_seq, &v_seq, 2).unwrap();
+
+        // Append 1 token
+        cache.append_token(&[5.0, 6.0], &[50.0, 60.0]).unwrap();
+
+        assert_eq!(cache.seq_len, 3);
+        // BySequence layout: index = seq * 2 + dim (for n_heads=1, head_dim=2)
+        assert_eq!(cache.k[0], 1.0); // seq=0, dim=0
+        assert_eq!(cache.k[1], 2.0); // seq=0, dim=1
+        assert_eq!(cache.k[2], 3.0); // seq=1, dim=0
+        assert_eq!(cache.k[3], 4.0); // seq=1, dim=1
+        assert_eq!(cache.k[4], 5.0); // seq=2, dim=0
+        assert_eq!(cache.k[5], 6.0); // seq=2, dim=1
+        assert_eq!(cache.v[0], 10.0);
+        assert_eq!(cache.v[4], 50.0);
+        assert_eq!(cache.v[5], 60.0);
+    }
+
+    #[test]
     fn layout_by_head_changes_memory_indexing() {
         let mut cache = LayerKVCache::new(4, 2, 2, KVLayout::ByHead);
         cache.append_token(&[1.0, 2.0, 3.0, 4.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
