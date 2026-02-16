@@ -2,14 +2,31 @@
 
 **Goal:** Deterministically generate tokens from a tiny model.
 
+## Status overview
+
+| Milestone | Status | Notes |
+|-----------|--------|-------|
+| A — "Hello Inference" | In Progress | Scaffold done, tokenizer done, remaining items open |
+| B — KV Cache Correctness | Not started | PR #18 open but unmerged |
+| C — Real Weight Loading | Not started | |
+| D — Metal Enablement | Not started | |
+| E — RAG + Agents | Not started | |
+
+See **`docs/PROGRESS_REPORT.md`** for full checklist with PR numbers and Issue #2 epic status.
+
+### Next: Tiny model forward pass — not started
+
+Implement a single-block forward pass on the CPU backend so that a tiny model can produce logits for a fixed prompt. This unblocks golden tests (logits vs. Python reference) and `llama-cli generate`.
+
 ## Checklist
 
-- [x] `llama-engine` trait + session struct
-- [x] Workspace scaffolding with all crates
-- [ ] Tokenizer loads + tokenize/detokenize roundtrip tests
-- [ ] Tiny model forward (single block) on CPU backend
-- [ ] Greedy sampling works
-- [ ] CLI can run: `llama-cli generate --prompt "hi"`
+- [x] `llama-engine` trait + session struct — PR #16 (merged), #19 (open)
+- [x] Workspace scaffolding — PR #16 (merged)
+- [x] Tokenizer trait + reference impl — PR #17, #22 (merged)
+- [x] Sampling crate — PR #21 (open)
+- [ ] KV cache — PR #18 (open)
+- [ ] **Tiny model forward pass** — single block on CPU backend *(next)*
+- [ ] CLI `llama-cli generate` — not started
 
 ## Tests
 
