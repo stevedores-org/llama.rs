@@ -208,11 +208,7 @@ impl fmt::Display for KVError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             KVError::CapacityExceeded { seq_len, max } => {
-                write!(
-                    f,
-                    "KV cache capacity exceeded: {} > {}",
-                    seq_len, max
-                )
+                write!(f, "KV cache capacity exceeded: {} > {}", seq_len, max)
             }
             KVError::ShapeMismatch { expected, got } => {
                 write!(f, "Shape mismatch: expected {}, got {}", expected, got)
