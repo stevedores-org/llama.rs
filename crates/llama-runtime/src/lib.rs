@@ -6,6 +6,11 @@
 //! - A `MockEngine` demonstrating the narrow-waist `LlamaEngine` trait
 //! - A Phase-1 verification harness for LLAMA-006:
 //!   `full_forward(prompt)` logits vs `prefill(prompt[:-1]) + decode(last_token)` logits.
+//! - LLAMA-007 runtime backend selector with feature-gated CPU/Metal support,
+//!   kernel availability matrix, and telemetry hooks for TTFT / tokens-per-sec.
+
+pub mod backend;
+pub mod telemetry;
 
 use llama_engine::{
     DecodeResult, LlamaEngine, LlamaError, ModelHandle, ModelSpec, PrefillResult, Result, Session,

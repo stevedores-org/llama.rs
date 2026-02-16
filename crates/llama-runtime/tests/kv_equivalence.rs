@@ -238,7 +238,7 @@ mod tests {
         for len in 2..=8 {
             let prompt: Vec<i32> = (0..len).map(|i| (i % 8) as i32).collect();
             let prompt_array: [i32; 8] = [
-                *prompt.get(0).unwrap_or(&0),
+                prompt.first().copied().unwrap_or(0),
                 *prompt.get(1).unwrap_or(&0),
                 *prompt.get(2).unwrap_or(&0),
                 *prompt.get(3).unwrap_or(&0),
@@ -355,9 +355,9 @@ mod tests {
         let verifier = RuntimeVerifier::new();
 
         // Test all 8x8 pairs of first two tokens
-        for first in 0..8 {
-            for second in 0..8 {
-                let prompt = [first as i32, second as i32];
+        for first in 0_i32..8 {
+            for second in 0_i32..8 {
+                let prompt = [first, second];
                 let report = verifier.verify_kv_equivalence(&prompt).unwrap();
                 assert!(
                     report.max_abs_diff <= 1e-5,
