@@ -24,10 +24,14 @@ pub struct ModelSpec {
 }
 
 /// Opaque handle to a loaded model.
-pub struct ModelHandle;
+pub struct ModelHandle {
+    pub id: String,
+}
 
 /// Represents an active inference session with its own KV cache state.
-pub struct Session;
+pub struct Session {
+    pub id: String,
+}
 
 /// Result of the prefill phase (prompt processing).
 pub struct PrefillResult;

@@ -20,8 +20,13 @@ impl Tokenizer {
     /// BPE/SentencePiece from tokenizer assets.
     pub fn encode(&self, text: &str) -> Vec<i32> {
         text.split_whitespace()
-            .enumerate()
-            .map(|(i, _)| i as i32)
+            .map(|word| {
+                let mut hash: i32 = 0;
+                for b in word.bytes() {
+                    hash = hash.wrapping_add(b as i32);
+                }
+                hash.abs()
+            })
             .collect()
     }
 
@@ -45,10 +50,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encode_returns_sequential_ids() {
+    fn encode_is_deterministic() {
         let tok = Tokenizer::new();
-        let ids = tok.encode("hello world foo");
-        assert_eq!(ids, vec![0, 1, 2]);
+        let ids1 = tok.encode("hello world");
+        let ids2 = tok.encode("world hello");
+        assert_eq!(ids1.len(), 2);
+        assert_eq!(ids2.len(), 2);
+        assert_eq!(ids1[0], ids2[1]);
+        assert_eq!(ids1[1], ids2[0]);
     }
 
     #[test]
