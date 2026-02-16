@@ -676,10 +676,7 @@ mod tests {
             .unwrap();
         // t2: h0=[9,10], h1=[11,12]
         cache
-            .append_token(
-                &[9.0, 10.0, 11.0, 12.0],
-                &[90.0, 100.0, 110.0, 120.0],
-            )
+            .append_token(&[9.0, 10.0, 11.0, 12.0], &[90.0, 100.0, 110.0, 120.0])
             .unwrap();
 
         cache.evict_prefix(1).unwrap();
@@ -704,10 +701,7 @@ mod tests {
             .append_token(&[5.0, 6.0, 7.0, 8.0], &[50.0, 60.0, 70.0, 80.0])
             .unwrap();
         cache
-            .append_token(
-                &[9.0, 10.0, 11.0, 12.0],
-                &[90.0, 100.0, 110.0, 120.0],
-            )
+            .append_token(&[9.0, 10.0, 11.0, 12.0], &[90.0, 100.0, 110.0, 120.0])
             .unwrap();
 
         cache.evict_prefix(1).unwrap();
