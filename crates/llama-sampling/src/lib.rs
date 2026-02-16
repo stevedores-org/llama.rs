@@ -20,8 +20,6 @@
 //! let token = sampler.sample(&logits)?;
 //! ```
 
-use std::collections::HashMap;
-
 /// Sampling error type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SamplingError {
@@ -362,10 +360,6 @@ mod tests {
         let low_probs = low_temp.softmax(&low_temp_logits);
 
         // High temp should be more uniform (all probs closer to mean)
-        let mean_high = high_probs.iter().sum::<f32>() / high_probs.len() as f32;
-        let mean_low = low_probs.iter().sum::<f32>() / low_probs.len() as f32;
-
-        // Check that highest prob in high-temp is closer to mean than in low-temp
         let max_high = *high_probs
             .iter()
             .max_by(|a, b| a.partial_cmp(b).unwrap())
