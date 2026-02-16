@@ -4,8 +4,8 @@
 //! Implements greedy, temperature, top-k, top-p, and repetition penalty sampling
 //! with deterministic seeded RNG for reproducible test runs.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::HashSet;
 
 /// Error type for sampling operations.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -95,10 +95,13 @@ impl Sampler {
             return Err(SamplingError::EmptyLogits);
         }
 
-        let mut adjusted = logits.to_vec();
-        if let Some(penalty) = self.cfg.repetition_penalty {
-            apply_repetition_penalty(&mut adjusted, history, penalty)?;
-        }
+        let adjusted: Cow<'_, [f32]> = if let Some(penalty) = self.cfg.repetition_penalty {
+            let mut buf = logits.to_vec();
+            apply_repetition_penalty(&mut buf, history, penalty)?;
+            Cow::Owned(buf)
+        } else {
+            Cow::Borrowed(logits)
+        };
 
         if self.cfg.strategy == SamplingStrategy::Greedy {
             return greedy_sample(&adjusted);
@@ -108,6 +111,7 @@ impl Sampler {
 
         if let Some(top_k) = self.cfg.top_k {
             apply_top_k(&mut probs, top_k);
+            normalize_probs(&mut probs);
         }
 
         if let Some(top_p) = self.cfg.top_p {
@@ -150,7 +154,7 @@ pub fn apply_repetition_penalty(
         return Err(SamplingError::InvalidRepetitionPenalty(penalty));
     }
 
-    let mut seen = HashSet::new();
+    let mut seen = vec![false; logits.len()];
     for &token in history {
         if token < 0 {
             return Err(SamplingError::InvalidHistoryToken(token));
@@ -159,7 +163,8 @@ pub fn apply_repetition_penalty(
         if idx >= logits.len() {
             return Err(SamplingError::InvalidHistoryToken(token));
         }
-        if seen.insert(idx) {
+        if !seen[idx] {
+            seen[idx] = true;
             if logits[idx] > 0.0 {
                 logits[idx] /= penalty;
             } else {
@@ -226,10 +231,10 @@ fn apply_top_p(probs: &mut [f32], top_p: f32) -> Result<(), SamplingError> {
 
     let mut cumulative = 0.0f32;
     let mut keep = vec![false; probs.len()];
-    for (rank, &(idx, p)) in order.iter().enumerate() {
+    for &(idx, p) in &order {
         cumulative += p;
         keep[idx] = true;
-        if cumulative >= top_p && rank > 0 {
+        if cumulative >= top_p {
             break;
         }
     }
