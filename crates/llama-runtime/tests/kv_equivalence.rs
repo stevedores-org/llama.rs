@@ -248,7 +248,9 @@ mod tests {
                 *prompt.get(7).unwrap_or(&0),
             ];
 
-            let report = verifier.verify_kv_equivalence(&prompt_array[..len]).unwrap();
+            let report = verifier
+                .verify_kv_equivalence(&prompt_array[..len])
+                .unwrap();
             assert!(
                 report.max_abs_diff <= 1e-5,
                 "Length {}: KV equivalence should hold within 1e-5, got {}",

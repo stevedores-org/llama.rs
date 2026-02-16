@@ -12,7 +12,7 @@ use llama_engine::{
     TokenId,
 };
 use llama_kv::{KVLayout, LayerKVCache};
-use llama_sampling::Sampler;
+use llama_sampling::{Sampler, SamplingConfig, SamplingStrategy};
 use llama_tokenizer::{Tokenizer, WhitespaceTokenizer};
 use std::sync::Mutex;
 
@@ -33,7 +33,13 @@ impl MockEngine {
     pub fn new() -> Self {
         Self {
             tokenizer: WhitespaceTokenizer::new(),
-            sampler: Mutex::new(Sampler::new()),
+            sampler: Mutex::new(
+                Sampler::new(SamplingConfig {
+                    strategy: SamplingStrategy::Greedy,
+                    ..SamplingConfig::default()
+                })
+                .expect("default config is valid"),
+            ),
         }
     }
 }
@@ -71,7 +77,7 @@ impl LlamaEngine for MockEngine {
         let mock_logits = vec![0.1, 0.5, 0.1, 0.1, 0.2];
         let mut sampler = self.sampler.lock().unwrap();
         let token = sampler
-            .sample(&mock_logits)
+            .sample(&mock_logits, &[])
             .map_err(|e| LlamaError::Inference(format!("{}", e)))?;
         Ok(DecodeResult {
             token: token as TokenId,
