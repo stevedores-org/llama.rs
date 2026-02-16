@@ -1,0 +1,16 @@
+{
+  "name": "llama-rs-docs",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "bun run src/dev.ts",
+    "build": "bun run src/build.ts"
+  },
+  "dependencies": {
+    "hono": "^4"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}
