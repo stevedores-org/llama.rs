@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use llama_tokenizer::{Tokenizer, WhitespaceTokenizer, DecodingState};
+    use llama_tokenizer::{DecodingState, Tokenizer, WhitespaceTokenizer};
 
     // ===== Section A: Roundtrip tests =====
 
@@ -36,13 +36,13 @@ mod tests {
         let tok = WhitespaceTokenizer::new();
         let test_cases = vec![
             // split_whitespace() drops leading/trailing whitespace
-            (" a", "a"),                      // leading space stripped
-            ("a ", "a"),                      // trailing space stripped
-            ("a  b", "a b"),                  // double space collapses to single in join
-            ("  leading", "leading"),         // multiple leading stripped
-            ("trailing  ", "trailing"),       // multiple trailing stripped
-            (" \n", ""),                      // space + newline = pure whitespace
-            ("\t\t", ""),                     // tabs = pure whitespace
+            (" a", "a"),                // leading space stripped
+            ("a ", "a"),                // trailing space stripped
+            ("a  b", "a b"),            // double space collapses to single in join
+            ("  leading", "leading"),   // multiple leading stripped
+            ("trailing  ", "trailing"), // multiple trailing stripped
+            (" \n", ""),                // space + newline = pure whitespace
+            ("\t\t", ""),               // tabs = pure whitespace
         ];
 
         for (input, expected) in test_cases {
@@ -90,7 +90,9 @@ mod tests {
         let mut accumulated = String::new();
 
         for &token in &tokens {
-            let chunk = tok.decode_token(token, &mut state).expect("decode_token failed");
+            let chunk = tok
+                .decode_token(token, &mut state)
+                .expect("decode_token failed");
             accumulated.push_str(&chunk);
         }
 
@@ -104,14 +106,18 @@ mod tests {
         // First sequence: "a b"
         let tokens1 = tok.encode("a b").expect("encode failed");
         let mut state1 = DecodingState::new();
-        let out1_t0 = tok.decode_token(tokens1[0], &mut state1).expect("decode failed");
+        let out1_t0 = tok
+            .decode_token(tokens1[0], &mut state1)
+            .expect("decode failed");
         assert_eq!(out1_t0, "a");
         assert_eq!(state1.buffer(), "a");
 
         // Second sequence: "x y" (different state)
         let tokens2 = tok.encode("x y").expect("encode failed");
         let mut state2 = DecodingState::new();
-        let out2_t0 = tok.decode_token(tokens2[0], &mut state2).expect("decode failed");
+        let out2_t0 = tok
+            .decode_token(tokens2[0], &mut state2)
+            .expect("decode failed");
         assert_eq!(out2_t0, "x");
         assert_eq!(state2.buffer(), "x");
 
@@ -125,7 +131,8 @@ mod tests {
         let tokens = tok.encode("hello world").expect("encode failed");
 
         let mut state = DecodingState::new();
-        tok.decode_token(tokens[0], &mut state).expect("decode failed");
+        tok.decode_token(tokens[0], &mut state)
+            .expect("decode failed");
         assert!(!state.buffer().is_empty());
 
         state.clear();
@@ -153,7 +160,11 @@ mod tests {
     #[test]
     fn vocab_size_tracks_encoding() {
         let tok = WhitespaceTokenizer::new();
-        assert_eq!(tok.vocab_size(), 0, "empty tokenizer should have vocab_size=0");
+        assert_eq!(
+            tok.vocab_size(),
+            0,
+            "empty tokenizer should have vocab_size=0"
+        );
 
         tok.encode("one").expect("encode failed");
         assert_eq!(tok.vocab_size(), 1);
@@ -200,7 +211,11 @@ mod tests {
             // Nonempty input should produce at least one token
             // (except pure whitespace which splits into zero tokens)
             if !text.trim().is_empty() {
-                assert!(!encoded.is_empty(), "nonempty input produced zero tokens: {:?}", text);
+                assert!(
+                    !encoded.is_empty(),
+                    "nonempty input produced zero tokens: {:?}",
+                    text
+                );
             }
         }
     }
@@ -221,7 +236,8 @@ mod tests {
             let decoded_words: Vec<&str> = decoded.split_whitespace().collect();
 
             assert_eq!(
-                words.len(), decoded_words.len(),
+                words.len(),
+                decoded_words.len(),
                 "word count mismatch for: {:?}",
                 text
             );

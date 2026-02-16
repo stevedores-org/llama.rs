@@ -229,9 +229,7 @@ pub fn mlp_swiglu(
         )));
     }
     if w_gate.len() != d_model * d_ff || w_up.len() != d_model * d_ff {
-        return Err(ModelError::Shape(
-            "w_gate/w_up shape mismatch".to_string(),
-        ));
+        return Err(ModelError::Shape("w_gate/w_up shape mismatch".to_string()));
     }
     if w_down.len() != d_ff * d_model {
         return Err(ModelError::Shape("w_down shape mismatch".to_string()));
@@ -419,7 +417,10 @@ mod tests {
 
         let mag_before: f32 = q_orig.iter().map(|x| x * x).sum::<f32>().sqrt();
         let mag_after: f32 = q.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((mag_before - mag_after).abs() < 1e-5, "RoPE should preserve magnitude");
+        assert!(
+            (mag_before - mag_after).abs() < 1e-5,
+            "RoPE should preserve magnitude"
+        );
 
         let k_mag_before: f32 = k_orig.iter().map(|x| x * x).sum::<f32>().sqrt();
         let k_mag_after: f32 = k.iter().map(|x| x * x).sum::<f32>().sqrt();
