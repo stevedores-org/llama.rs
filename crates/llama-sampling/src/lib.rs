@@ -178,11 +178,7 @@ impl Sampler {
     }
 
     /// Sample with history for repetition penalty.
-    pub fn sample_with_history(
-        &self,
-        logits: &[f32],
-        history: &[usize],
-    ) -> SamplingResult<usize> {
+    pub fn sample_with_history(&self, logits: &[f32], history: &[usize]) -> SamplingResult<usize> {
         if logits.is_empty() {
             return Err(SamplingError::InvalidLogits);
         }
@@ -213,11 +209,8 @@ impl Sampler {
     }
 
     fn apply_top_k(&self, logits: &[f32], k: usize) -> Vec<f32> {
-        let mut indexed: Vec<(usize, f32)> = logits
-            .iter()
-            .enumerate()
-            .map(|(i, &l)| (i, l))
-            .collect();
+        let mut indexed: Vec<(usize, f32)> =
+            logits.iter().enumerate().map(|(i, &l)| (i, l)).collect();
 
         indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -235,11 +228,8 @@ impl Sampler {
     }
 
     fn apply_top_p(&self, probs: &[f32], p: f32) -> Vec<f32> {
-        let mut indexed: Vec<(usize, f32)> = probs
-            .iter()
-            .enumerate()
-            .map(|(i, &pr)| (i, pr))
-            .collect();
+        let mut indexed: Vec<(usize, f32)> =
+            probs.iter().enumerate().map(|(i, &pr)| (i, pr)).collect();
 
         indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -275,15 +265,9 @@ impl Sampler {
     }
 
     fn softmax(&self, logits: &[f32]) -> Vec<f32> {
-        let max_logit = logits
-            .iter()
-            .cloned()
-            .fold(f32::NEG_INFINITY, f32::max);
+        let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
 
-        let exps: Vec<f32> = logits
-            .iter()
-            .map(|&l| (l - max_logit).exp())
-            .collect();
+        let exps: Vec<f32> = logits.iter().map(|&l| (l - max_logit).exp()).collect();
 
         let sum: f32 = exps.iter().sum();
 
@@ -303,7 +287,11 @@ impl Sampler {
             .unwrap_or(0)
     }
 
-    fn sample_from_distribution(&self, probs: &[f32], rng: &mut SeededRng) -> SamplingResult<usize> {
+    fn sample_from_distribution(
+        &self,
+        probs: &[f32],
+        rng: &mut SeededRng,
+    ) -> SamplingResult<usize> {
         let r = rng.next_uniform();
         let mut cumsum = 0.0;
 
@@ -378,8 +366,14 @@ mod tests {
         let mean_low = low_probs.iter().sum::<f32>() / low_probs.len() as f32;
 
         // Check that highest prob in high-temp is closer to mean than in low-temp
-        let max_high = *high_probs.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-        let max_low = *low_probs.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+        let max_high = *high_probs
+            .iter()
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap();
+        let max_low = *low_probs
+            .iter()
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap();
 
         assert!(max_high < max_low); // Peak is less pronounced with high temp
     }
