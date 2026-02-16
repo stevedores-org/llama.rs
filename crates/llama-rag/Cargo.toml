@@ -1,0 +1,16 @@
+[package]
+name = "llama-rag"
+description = "RAG adapter bridging llama-engine embeddings to oxidizedRAG"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+llama-engine = { path = "../llama-engine" }
+graphrag-core = { path = "../../../../claude-code-0/oxidizedRAG/graphrag-core", default-features = false, features = ["memory-storage", "basic-retrieval", "async"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+llama-runtime = { path = "../llama-runtime" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

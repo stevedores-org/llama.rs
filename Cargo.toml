@@ -9,6 +9,7 @@ members = [
     "crates/llama-kv",
     "crates/llama-cli",
     "crates/llama-server",
+    "crates/llama-rag",
 ]
 
 [workspace.package]
