@@ -1,0 +1,9 @@
+[package]
+name = "llama-models"
+description = "Model architectures (Llama/Qwen/Mistral blocks) for llama.rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

@@ -1,0 +1,9 @@
+[package]
+name = "llama-runtime"
+description = "Execution runtime for llama.rs — oxidizedMLX integration and backend selection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

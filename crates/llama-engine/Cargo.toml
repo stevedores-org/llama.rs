@@ -1,0 +1,10 @@
+[package]
+name = "llama-engine"
+description = "Narrow-waist engine trait and core types for llama.rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
