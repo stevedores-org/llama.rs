@@ -8,9 +8,10 @@
 //!
 //! ### Interior Mutability
 //! `LlamaEngine` methods take `&self` (not `&mut self`) to allow shared access across
-//! multiple sessions and to enable concurrent inference without synchronizing access.
-//! Backends using interior mutability (e.g., `Mutex`, `Arc<RwLock>`) are responsible
-//! for thread-safe state management.
+//! multiple sessions and to enable concurrent inference without requiring exclusive
+//! borrows or external synchronization at call sites. Backends using interior
+//! mutability (e.g., `Mutex`, `Arc<RwLock>`) are still responsible for performing any
+//! necessary internal synchronization to ensure thread-safe access to shared state.
 //!
 //! ### Token Type
 //! `TokenId` is aliased as `i32` for FFI compatibility, though token IDs are logically
@@ -39,6 +40,9 @@ pub struct ModelSpec {
 }
 
 /// Opaque handle to a loaded model.
+///
+/// No public fields — backends use their own representation (pointers, indices, etc.).
+/// This is intentional so application code does not depend on backend internals.
 pub struct ModelHandle;
 
 /// Represents an active inference session with its own KV cache state.
@@ -51,11 +55,16 @@ pub struct ModelHandle;
 /// KV cache state, which is not a cheap or well-defined operation.
 #[derive(Debug)]
 pub struct Session {
-    /// Unique session ID for tracking and logging.
-    pub id: uuid::Uuid,
+    /// Unique session ID for tracking and logging (private so backends can rely on it as a stable key).
+    id: uuid::Uuid,
 }
 
 impl Session {
+    /// Return the unique session ID for tracking and logging.
+    pub fn id(&self) -> uuid::Uuid {
+        self.id
+    }
+
     /// Create a new inference session with a random UUID.
     pub fn new() -> Self {
         Self {
@@ -77,6 +86,7 @@ impl Default for Session {
 
 /// Result of the prefill phase (prompt processing).
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct PrefillResult {
     /// Number of tokens processed.
     pub tokens_processed: usize,
@@ -84,6 +94,7 @@ pub struct PrefillResult {
 
 /// Result of a single decode step.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct DecodeResult {
     /// The decoded token.
     pub token: TokenId,
