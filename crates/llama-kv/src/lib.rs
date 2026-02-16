@@ -117,11 +117,11 @@ impl LayerKVCache {
     /// - `n_heads`: Number of attention heads
     /// - `head_dim`: Dimension of each head
     pub fn new(max_seq_len: usize, n_heads: usize, head_dim: usize) -> Self {
-        let capacity = max_seq_len * n_heads * head_dim;
+        let buf_len = max_seq_len * n_heads * head_dim;
 
         Self {
-            k: vec![0.0; capacity],
-            v: vec![0.0; capacity],
+            k: vec![0.0; buf_len],
+            v: vec![0.0; buf_len],
             capacity: max_seq_len,
             n_heads,
             head_dim,
@@ -143,15 +143,20 @@ impl LayerKVCache {
         let expected_len = self.n_heads * self.head_dim;
 
         if k_token.len() != expected_len || v_token.len() != expected_len {
+            let got_len = if k_token.len() != expected_len {
+                k_token.len()
+            } else {
+                v_token.len()
+            };
             return Err(KVError::ShapeMismatch {
                 expected: expected_len,
-                got: k_token.len(),
+                got: got_len,
             });
         }
 
         if self.seq_len >= self.capacity {
             return Err(KVError::CapacityExceeded {
-                seq_len: self.seq_len,
+                seq_len: self.seq_len + 1,
                 max: self.capacity,
             });
         }
@@ -197,9 +202,14 @@ impl LayerKVCache {
         let total_len = prefill_len * self.n_heads * self.head_dim;
 
         if k_seq.len() != total_len || v_seq.len() != total_len {
+            let got_len = if k_seq.len() != total_len {
+                k_seq.len()
+            } else {
+                v_seq.len()
+            };
             return Err(KVError::ShapeMismatch {
                 expected: total_len,
-                got: k_seq.len(),
+                got: got_len,
             });
         }
 
@@ -247,6 +257,7 @@ impl SessionKVCache {
     /// - `n_heads`: Number of attention heads (same for all layers)
     /// - `head_dim`: Head dimension (same for all layers)
     pub fn new(n_layers: usize, max_seq_len: usize, n_heads: usize, head_dim: usize) -> Self {
+        assert!(n_layers > 0, "SessionKVCache requires n_layers > 0");
         let layers = (0..n_layers)
             .map(|_| LayerKVCache::new(max_seq_len, n_heads, head_dim))
             .collect();
@@ -255,7 +266,9 @@ impl SessionKVCache {
     }
 
     /// Get KV cache for a specific layer (mutable).
-    pub fn layer_mut(&mut self, layer_idx: usize) -> Option<&mut LayerKVCache> {
+    ///
+    /// Crate-private to prevent callers from breaking the synchronized seq_len invariant.
+    pub(crate) fn layer_mut(&mut self, layer_idx: usize) -> Option<&mut LayerKVCache> {
         self.layers.get_mut(layer_idx)
     }
 
@@ -288,12 +301,40 @@ impl SessionKVCache {
     /// - After error, state is undefined; call `clear()` and retry from clean state
     pub fn append_token(&mut self, k_tokens: &[&[f32]], v_tokens: &[&[f32]]) -> KVResult<()> {
         if k_tokens.len() != self.layers.len() || v_tokens.len() != self.layers.len() {
+            let got_len = if k_tokens.len() != self.layers.len() {
+                k_tokens.len()
+            } else {
+                v_tokens.len()
+            };
             return Err(KVError::ShapeMismatch {
                 expected: self.layers.len(),
-                got: k_tokens.len(),
+                got: got_len,
             });
         }
 
+        // Pre-validate all layers before mutating any, to maintain atomic semantics.
+        for (i, layer) in self.layers.iter().enumerate() {
+            let expected_len = layer.n_heads * layer.head_dim;
+            if k_tokens[i].len() != expected_len || v_tokens[i].len() != expected_len {
+                let got_len = if k_tokens[i].len() != expected_len {
+                    k_tokens[i].len()
+                } else {
+                    v_tokens[i].len()
+                };
+                return Err(KVError::ShapeMismatch {
+                    expected: expected_len,
+                    got: got_len,
+                });
+            }
+            if layer.seq_len >= layer.capacity {
+                return Err(KVError::CapacityExceeded {
+                    seq_len: layer.seq_len + 1,
+                    max: layer.capacity,
+                });
+            }
+        }
+
+        // All validations passed — perform writes.
         for (i, layer) in self.layers.iter_mut().enumerate() {
             layer.append_token(k_tokens[i], v_tokens[i])?;
         }
@@ -304,14 +345,23 @@ impl SessionKVCache {
     /// Write K/V for prefill across all layers.
     pub fn write_prefill(&mut self, k_seqs: &[&[f32]], v_seqs: &[&[f32]]) -> KVResult<()> {
         if k_seqs.len() != self.layers.len() || v_seqs.len() != self.layers.len() {
+            let got_len = if k_seqs.len() != self.layers.len() {
+                k_seqs.len()
+            } else {
+                v_seqs.len()
+            };
             return Err(KVError::ShapeMismatch {
                 expected: self.layers.len(),
-                got: k_seqs.len(),
+                got: got_len,
             });
         }
 
-        for (i, layer) in self.layers.iter_mut().enumerate() {
-            layer.write_prefill(k_seqs[i], v_seqs[i])?;
+        // Write layer-by-layer; on error, roll back to consistent empty state.
+        for i in 0..self.layers.len() {
+            if let Err(e) = self.layers[i].write_prefill(k_seqs[i], v_seqs[i]) {
+                self.clear();
+                return Err(e);
+            }
         }
 
         Ok(())
@@ -527,6 +577,61 @@ mod tests {
         // 2 layers * 2 tokens * 2 heads * 4 dim * 2 (K+V) * sizeof(f32)
         let expected = 2 * 2 * 2 * 4 * 2 * std::mem::size_of::<f32>();
         assert_eq!(session.active_memory_bytes(), expected);
+    }
+
+    #[test]
+    fn session_append_token_atomic_on_capacity_error() {
+        // 2 layers, capacity=1: fill first, then attempt second append
+        let mut session = SessionKVCache::new(2, 1, 2, 4);
+        let k_tokens: Vec<Vec<f32>> = vec![vec![0.1; 8], vec![0.1; 8]];
+        let v_tokens: Vec<Vec<f32>> = vec![vec![0.2; 8], vec![0.2; 8]];
+
+        session
+            .append_token(
+                &k_tokens.iter().map(|v| v.as_slice()).collect::<Vec<_>>(),
+                &v_tokens.iter().map(|v| v.as_slice()).collect::<Vec<_>>(),
+            )
+            .unwrap();
+        assert_eq!(session.seq_len(), 1);
+
+        // This should fail atomically — no layer should advance.
+        let result = session.append_token(
+            &k_tokens.iter().map(|v| v.as_slice()).collect::<Vec<_>>(),
+            &v_tokens.iter().map(|v| v.as_slice()).collect::<Vec<_>>(),
+        );
+        assert!(result.is_err());
+
+        // Both layers should still be at seq_len=1 (unchanged).
+        for i in 0..2 {
+            assert_eq!(session.layer(i).unwrap().seq_len, 1);
+        }
+    }
+
+    #[test]
+    fn session_write_prefill_rollback_on_error() {
+        // 2 layers, capacity=4. Give layer 0 valid data, layer 1 wrong-shape data.
+        let mut session = SessionKVCache::new(2, 4, 2, 4);
+        let k_good = vec![0.1; 32]; // 4 tokens * 2 heads * 4 dim
+        let v_good = vec![0.2; 32];
+        let k_bad = vec![0.1; 17]; // Wrong shape
+        let v_bad = vec![0.2; 17];
+
+        let result = session.write_prefill(
+            &[k_good.as_slice(), k_bad.as_slice()],
+            &[v_good.as_slice(), v_bad.as_slice()],
+        );
+        assert!(result.is_err());
+
+        // After rollback, all layers should be at seq_len=0.
+        for i in 0..2 {
+            assert_eq!(session.layer(i).unwrap().seq_len, 0);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "n_layers > 0")]
+    fn session_zero_layers_panics() {
+        SessionKVCache::new(0, 10, 2, 4);
     }
 
     #[test]
