@@ -3,8 +3,13 @@ name = "llama-rs"
 version = "0.1.0"
 edition = "2021"
 description = "Rust bindings and tools for llama.cpp"
+authors = ["Steven Irvin <stevei101>"]
 repository = "https://github.com/stevedores-org/llama.rs"
+homepage = "https://crates.io/users/community-stevedores-org"
 license = "MIT"
+readme = "README.md"
+keywords = ["llama", "llm", "inference", "ai", "machine-learning"]
+categories = ["science", "api-bindings"]
 
 [dependencies]
 
