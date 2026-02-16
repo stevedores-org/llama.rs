@@ -30,6 +30,11 @@ use std::thread;
 ///
 /// Uses a simple whitespace tokenizer and greedy sampler to demonstrate
 /// the "narrow waist" API without requiring a real model or MLX backend.
+///
+/// **Note:** The mock `decode()` returns tokens from a shared sampler,
+/// ignoring the `Session` parameter. All sessions produce the same
+/// token sequence. This is intentional for testing the API contract;
+/// real engines track per-session KV cache state.
 pub struct MockEngine {
     tokenizer: WhitespaceTokenizer,
     sampler: Mutex<Sampler>,

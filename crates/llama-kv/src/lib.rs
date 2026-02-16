@@ -343,8 +343,10 @@ impl SessionKVCache {
     }
 
     /// Get current sequence length (same for all layers by invariant).
+    ///
+    /// Returns 0 if no layers exist (though the constructor prevents this).
     pub fn seq_len(&self) -> usize {
-        self.layers[0].seq_len
+        self.layers.first().map(|l| l.seq_len).unwrap_or(0)
     }
 
     /// Append K/V for one token to all layers atomically.
