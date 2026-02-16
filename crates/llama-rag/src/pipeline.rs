@@ -88,7 +88,8 @@ impl RagPipeline {
             .map_err(|e| RagError::Engine(e.to_string()))?;
 
         let mut session = Session::new();
-        let _ = self.engine
+        let _ = self
+            .engine
             .prefill(&mut session, &tokens)
             .map_err(|e| RagError::Engine(e.to_string()))?;
 

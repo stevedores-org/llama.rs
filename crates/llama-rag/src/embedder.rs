@@ -30,17 +30,23 @@ impl Embedder for LlamaEmbedder {
         let results = self
             .engine
             .embed(&[text])
-            .map_err(|e| GraphRAGError::Embedding { message: e.to_string() })?;
+            .map_err(|e| GraphRAGError::Embedding {
+                message: e.to_string(),
+            })?;
         results
             .into_iter()
             .next()
-            .ok_or_else(|| GraphRAGError::Embedding { message: "engine returned no embeddings".to_string() })
+            .ok_or_else(|| GraphRAGError::Embedding {
+                message: "engine returned no embeddings".to_string(),
+            })
     }
 
     fn embed_batch(&self, texts: &[&str]) -> graphrag_core::Result<Vec<Vec<f32>>> {
         self.engine
             .embed(texts)
-            .map_err(|e| GraphRAGError::Embedding { message: e.to_string() })
+            .map_err(|e| GraphRAGError::Embedding {
+                message: e.to_string(),
+            })
     }
 
     fn dimension(&self) -> usize {

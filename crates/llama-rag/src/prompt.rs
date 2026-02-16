@@ -76,7 +76,11 @@ impl RagPromptBuilder {
 
         // Sort by score descending — best results first
         let mut sorted: Vec<_> = self.contexts.iter().collect();
-        sorted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         for (i, ctx) in sorted.iter().enumerate() {
             let idx = i + 1;
