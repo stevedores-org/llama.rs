@@ -20,6 +20,7 @@ fn test_state_with_concurrency(max_concurrent: usize) -> AppState {
             max_tokens: 10,
             default_temperature: 0.7,
             max_concurrent_sessions: max_concurrent,
+            eos_token_id: 2,
         },
         sessions,
     }
@@ -82,7 +83,8 @@ async fn chat_completion_non_streaming() {
         .unwrap()
         .is_empty());
     assert_eq!(json["choices"][0]["message"]["role"], "assistant");
-    assert_eq!(json["choices"][0]["finish_reason"], "stop");
+    // MockEngine never produces EOS token, so with max_tokens=3 we hit the limit.
+    assert_eq!(json["choices"][0]["finish_reason"], "length");
     assert!(json["usage"]["prompt_tokens"].as_u64().unwrap() > 0);
     assert!(json["id"].as_str().unwrap().starts_with("chatcmpl-"));
 }

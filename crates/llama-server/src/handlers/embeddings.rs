@@ -33,9 +33,11 @@ pub async fn handle_embeddings(
         })
         .collect();
 
-    // Calculate token counts (rough estimate: ~4 chars per token)
-    let total_chars: usize = texts.iter().map(|t| t.len()).sum();
-    let prompt_tokens = (total_chars / 4).max(1);
+    // Calculate token counts using the engine's tokenizer for accuracy.
+    let prompt_tokens: usize = texts
+        .iter()
+        .map(|t| state.engine.tokenize(t).map(|v| v.len()).unwrap_or(0))
+        .sum();
 
     Ok(Json(EmbeddingResponse {
         object: "list".to_string(),

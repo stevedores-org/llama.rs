@@ -55,12 +55,18 @@ impl Drop for SessionGuard {
     fn drop(&mut self) {
         // Signal cancellation so any in-flight decode loop stops.
         self.cancel.cancel();
-        // Remove from active sessions (fire-and-forget).
-        let manager = self.manager.clone();
-        let id = self.session_id;
-        tokio::spawn(async move {
-            manager.remove_session(id).await;
-        });
+        // Remove from active sessions (fire-and-forget if runtime exists).
+        // Use try_current() to safely check if we're in an async context.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let manager = self.manager.clone();
+            let id = self.session_id;
+            // Spawn only if runtime is available (fire-and-forget)
+            #[allow(clippy::let_underscore_future)]
+            let _ = tokio::spawn(async move {
+                manager.remove_session(id).await;
+            });
+        }
+        // If no runtime, the session will eventually be cleaned up when the manager is dropped
     }
 }
 
