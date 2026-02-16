@@ -210,6 +210,8 @@ pub struct LoadedTokenizer {
     vocab: HashMap<i32, String>,
     reverse_vocab: HashMap<String, i32>,
     unknown_id: Option<i32>,
+    max_piece_len: usize,
+    byte_pieces: [Option<i32>; 256],
 }
 
 impl LoadedTokenizer {
@@ -260,14 +262,25 @@ impl LoadedTokenizer {
     }
 
     fn from_vocab(vocab: HashMap<i32, String>, unknown_id: Option<i32>) -> Self {
-        let reverse_vocab = vocab
-            .iter()
-            .map(|(id, piece)| (piece.clone(), *id))
-            .collect::<HashMap<_, _>>();
+        let mut reverse_vocab = HashMap::with_capacity(vocab.len());
+        let mut max_piece_len = 0;
+        let mut byte_pieces = [None; 256];
+
+        for (&id, piece) in &vocab {
+            reverse_vocab.insert(piece.clone(), id);
+            max_piece_len = max_piece_len.max(piece.len());
+
+            if let Some(byte) = parse_byte_piece(piece) {
+                byte_pieces[byte as usize] = Some(id);
+            }
+        }
+
         Self {
             vocab,
             reverse_vocab,
             unknown_id,
+            max_piece_len,
+            byte_pieces,
         }
     }
 
@@ -380,8 +393,9 @@ impl Tokenizer for LoadedTokenizer {
             let mut best_id: Option<i32> = None;
             let mut best_len: usize = 0;
 
+            let max_j = (i + self.max_piece_len).min(len);
             let mut j = i + 1;
-            while j <= len {
+            while j <= max_j {
                 if !text.is_char_boundary(j) {
                     j += 1;
                     continue;
@@ -399,18 +413,37 @@ impl Tokenizer for LoadedTokenizer {
             if let Some(id) = best_id {
                 out.push(id);
                 i += best_len;
-            } else if let Some(unknown_id) = self.unknown_id {
-                out.push(unknown_id);
-                if let Some(ch) = text[i..].chars().next() {
-                    i += ch.len_utf8();
-                } else {
-                    break;
-                }
             } else {
-                let snippet: String = text[i..].chars().take(16).collect();
-                return Err(TokenizerError::EncodingError(format!(
-                    "input text starting with '{snippet}' missing from loaded vocabulary"
-                )));
+                // If no direct piece match, try byte-fallback before unknown_id.
+                let ch = text[i..].chars().next().ok_or_else(|| {
+                    TokenizerError::EncodingError("unexpected end of string".to_string())
+                })?;
+                let ch_len = ch.len_utf8();
+                let ch_bytes = &text[i..i + ch_len].as_bytes();
+
+                let mut all_bytes_matched = true;
+                let mut byte_ids = Vec::with_capacity(ch_len);
+                for &b in *ch_bytes {
+                    if let Some(id) = self.byte_pieces[b as usize] {
+                        byte_ids.push(id);
+                    } else {
+                        all_bytes_matched = false;
+                        break;
+                    }
+                }
+
+                if all_bytes_matched {
+                    out.extend(byte_ids);
+                    i += ch_len;
+                } else if let Some(unknown_id) = self.unknown_id {
+                    out.push(unknown_id);
+                    i += ch_len;
+                } else {
+                    let snippet: String = text[i..].chars().take(16).collect();
+                    return Err(TokenizerError::EncodingError(format!(
+                        "input text starting with '{snippet}' missing from loaded vocabulary (no byte fallback)"
+                    )));
+                }
             }
         }
         Ok(out)
@@ -708,5 +741,23 @@ mod tests {
         let mut state = DecodingState::new();
         let err = tok.decode_token(1, &mut state).unwrap_err();
         assert!(matches!(err, TokenizerError::DecodingError(_)));
+    }
+
+    #[test]
+    fn loaded_tokenizer_byte_pieces_encode() {
+        let json = r#"{
+          "model": {
+            "unk_token": "<unk>",
+            "vocab": {
+              "<unk>": 0,
+              "<0x41>": 1
+            }
+          }
+        }"#;
+        let tok = LoadedTokenizer::from_tokenizer_json_str(json).unwrap();
+        // 'A' is 0x41. It should match "<0x41>" if we handle byte pieces.
+        // Currently it fails because "A" != "<0x41>".
+        let encoded = tok.encode("A").unwrap();
+        assert_eq!(encoded, vec![1]);
     }
 }
