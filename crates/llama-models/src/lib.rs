@@ -54,6 +54,21 @@ impl WeightNames {
             lm_head: "lm_head.weight".to_string(),
         }
     }
+
+    /// Build block attention weight key.
+    pub fn block_attn_key(&self, layer_idx: usize, weight_type: &str) -> String {
+        format!("model.layers.{}.self_attn.{}.weight", layer_idx, weight_type)
+    }
+
+    /// Build block MLP weight key.
+    pub fn block_mlp_key(&self, layer_idx: usize, weight_type: &str) -> String {
+        format!("model.layers.{}.mlp.{}.weight", layer_idx, weight_type)
+    }
+
+    /// Build block norm weight key.
+    pub fn block_norm_key(&self, layer_idx: usize, _norm_type: &str) -> String {
+        format!("model.layers.{}.input_layernorm.weight", layer_idx)
+    }
 }
 
 /// Weight loader for safetensors format.
@@ -108,6 +123,23 @@ impl WeightLoader {
     /// Load output projection weights.
     pub fn load_lm_head(&self, names: &WeightNames, d_model: usize, vocab_size: usize) -> WeightResult<Vec<f32>> {
         self.load_weight(&names.lm_head, d_model * vocab_size)
+    }
+
+    /// Load attention weights for a block.
+    pub fn load_attention(&self, names: &WeightNames, layer_idx: usize, d_model: usize) -> WeightResult<(Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>)> {
+        let w_q = self.load_weight(&names.block_attn_key(layer_idx, "q_proj"), d_model * d_model)?;
+        let w_k = self.load_weight(&names.block_attn_key(layer_idx, "k_proj"), d_model * d_model)?;
+        let w_v = self.load_weight(&names.block_attn_key(layer_idx, "v_proj"), d_model * d_model)?;
+        let w_o = self.load_weight(&names.block_attn_key(layer_idx, "o_proj"), d_model * d_model)?;
+        Ok((w_q, w_k, w_v, w_o))
+    }
+
+    /// Load MLP weights for a block.
+    pub fn load_mlp(&self, names: &WeightNames, layer_idx: usize, d_model: usize, d_ff: usize) -> WeightResult<(Vec<f32>, Vec<f32>, Vec<f32>)> {
+        let w_gate = self.load_weight(&names.block_mlp_key(layer_idx, "gate_proj"), d_model * d_ff)?;
+        let w_up = self.load_weight(&names.block_mlp_key(layer_idx, "up_proj"), d_model * d_ff)?;
+        let w_down = self.load_weight(&names.block_mlp_key(layer_idx, "down_proj"), d_ff * d_model)?;
+        Ok((w_gate, w_up, w_down))
     }
 }
 
@@ -412,6 +444,15 @@ impl SwiGLU {
 
         output
     }
+
+    /// Load weights from a WeightLoader.
+    pub fn load_weights(&mut self, loader: &WeightLoader, names: &WeightNames, layer_idx: usize, d_model: usize, d_ff: usize) -> WeightResult<()> {
+        let (w_gate, w_up, w_down) = loader.load_mlp(names, layer_idx, d_model, d_ff)?;
+        self.w_gate = w_gate;
+        self.w_up = w_up;
+        self.w_down = w_down;
+        Ok(())
+    }
 }
 
 /// Multi-Head Self-Attention.
@@ -492,6 +533,18 @@ impl TransformerBlock {
             .zip(mlp_out.iter())
             .map(|(a, b)| a + b)
             .collect()
+    }
+
+    /// Load weights from a WeightLoader.
+    pub fn load_weights(&mut self, loader: &WeightLoader, names: &WeightNames, layer_idx: usize, config: &ModelConfig) -> WeightResult<()> {
+        // Load norm weights
+        self.norm1.weight = loader.load_weight(&format!("model.layers.{}.input_layernorm.weight", layer_idx), config.d_model)?;
+        self.norm2.weight = loader.load_weight(&format!("model.layers.{}.post_attention_layernorm.weight", layer_idx), config.d_model)?;
+
+        // Load attention and MLP weights
+        self.attn.load_weights(loader, names, layer_idx, config.d_model)?;
+        self.mlp.load_weights(loader, names, layer_idx, config.d_model, config.d_ff)?;
+        Ok(())
     }
 }
 
@@ -618,6 +671,11 @@ impl LlamaModel {
         // Load embeddings
         self.embeddings = loader.load_embeddings(names, self.config.vocab_size, self.config.d_model)?;
 
+        // Load transformer block weights
+        for (layer_idx, block) in self.blocks.iter_mut().enumerate() {
+            block.load_weights(&loader, names, layer_idx, &self.config)?;
+        }
+
         // Load final norm weights
         self.norm.weight = loader.load_norm(names, self.config.d_model)?;
 
@@ -661,6 +719,16 @@ impl Attention {
             n_heads,
             head_dim,
         }
+    }
+
+    /// Load weights from a WeightLoader.
+    pub fn load_weights(&mut self, loader: &WeightLoader, names: &WeightNames, layer_idx: usize, d_model: usize) -> WeightResult<()> {
+        let (w_q, w_k, w_v, w_o) = loader.load_attention(names, layer_idx, d_model)?;
+        self.w_q = w_q;
+        self.w_k = w_k;
+        self.w_v = w_v;
+        self.w_o = w_o;
+        Ok(())
     }
 
     /// Softmax function for attention scores.
@@ -1028,5 +1096,48 @@ mod tests {
         );
         assert_eq!(model.norm.weight.len(), config.d_model);
         assert_eq!(model.lm_head.len(), config.d_model * config.vocab_size);
+    }
+
+    #[test]
+    fn block_weight_loading_api() {
+        let config = ModelConfig::llama3_8b();
+        let block = TransformerBlock::new(&config);
+
+        // Verify block has correct weight dimensions before loading
+        assert_eq!(block.attn.w_q.len(), config.d_model * config.d_model);
+        assert_eq!(block.mlp.w_gate.len(), config.d_model * config.d_ff);
+
+        // Verify block norms have correct dimensions
+        assert_eq!(block.norm1.weight.len(), config.d_model);
+        assert_eq!(block.norm2.weight.len(), config.d_model);
+    }
+
+    #[test]
+    fn weight_names_all_variants() {
+        let llama_names = WeightNames::llama3();
+        let qwen_names = WeightNames::qwen();
+
+        // Test attention key generation
+        let attn_q = llama_names.block_attn_key(0, "q_proj");
+        assert!(attn_q.contains("model.layers.0"));
+        assert!(attn_q.contains("self_attn"));
+        assert!(attn_q.contains("q_proj"));
+
+        // Test MLP key generation
+        let mlp_gate = llama_names.block_mlp_key(0, "gate_proj");
+        assert!(mlp_gate.contains("model.layers.0"));
+        assert!(mlp_gate.contains("mlp"));
+        assert!(mlp_gate.contains("gate_proj"));
+
+        // Test norm key generation
+        let norm = llama_names.block_norm_key(0, "unused");
+        assert!(norm.contains("model.layers.0"));
+        assert!(norm.contains("input_layernorm"));
+
+        // Verify Qwen and Llama use same naming (for now)
+        assert_eq!(
+            llama_names.block_attn_key(5, "o_proj"),
+            qwen_names.block_attn_key(5, "o_proj")
+        );
     }
 }
