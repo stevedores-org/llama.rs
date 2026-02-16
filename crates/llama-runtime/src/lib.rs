@@ -468,7 +468,7 @@ fn deterministic_jitter(seed: u64, position: usize) -> f32 {
     let x = seed
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
         .wrapping_add(pos_mix);
-    let top = (x >> 40) as u32;
+    let top = (x >> 32) as u32;
     (top as f32 / u32::MAX as f32) - 0.5
 }
 
@@ -502,6 +502,7 @@ fn attention_single_head_cpu(
     seq_len: usize,
     dim: usize,
 ) -> [f32; 2] {
+    assert_eq!(dim, 2, "ToyModel supports only dim=2");
     let scale = 1.0 / (dim as f32).sqrt();
 
     let mut scores = vec![0.0f32; seq_len];
