@@ -193,7 +193,11 @@ impl LayerKVCache {
         for seq in 0..prefill_len {
             let src_offset = seq * self.n_heads * self.head_dim;
             let src_end = src_offset + self.n_heads * self.head_dim;
-            self.write_token_at_position(seq, &k_seq[src_offset..src_end], &v_seq[src_offset..src_end]);
+            self.write_token_at_position(
+                seq,
+                &k_seq[src_offset..src_end],
+                &v_seq[src_offset..src_end],
+            );
         }
         self.seq_len = prefill_len;
 
@@ -283,7 +287,11 @@ impl SessionKVCache {
     /// Append K/V for one token to all layers atomically.
     ///
     /// Pre-validates all layers before writing to maintain synchronized seq_len.
-    pub fn append_token(&mut self, k_tokens: &[&[f32]], v_tokens: &[&[f32]]) -> Result<(), KVError> {
+    pub fn append_token(
+        &mut self,
+        k_tokens: &[&[f32]],
+        v_tokens: &[&[f32]],
+    ) -> Result<(), KVError> {
         if k_tokens.len() != self.layers.len() || v_tokens.len() != self.layers.len() {
             let got_len = if k_tokens.len() != self.layers.len() {
                 k_tokens.len()
@@ -346,7 +354,11 @@ impl SessionKVCache {
         }
 
         for i in 0..self.layers.len() {
-            if let Err(e) = self.layers[i].write_prefill(k_seqs[i], v_seqs[i], prefill_len) {
+            let result =
+                self.layer_mut(i)
+                    .unwrap()
+                    .write_prefill(k_seqs[i], v_seqs[i], prefill_len);
+            if let Err(e) = result {
                 self.clear();
                 return Err(e);
             }
@@ -496,7 +508,9 @@ mod tests {
     #[test]
     fn layout_by_head_changes_memory_indexing() {
         let mut cache = LayerKVCache::new(4, 2, 2, KVLayout::ByHead);
-        cache.append_token(&[1.0, 2.0, 3.0, 4.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
+        cache
+            .append_token(&[1.0, 2.0, 3.0, 4.0], &[10.0, 20.0, 30.0, 40.0])
+            .unwrap();
 
         // head 0, seq 0
         assert_eq!(cache.k[0], 1.0);
@@ -509,7 +523,9 @@ mod tests {
     #[test]
     fn layout_transposed_changes_memory_indexing() {
         let mut cache = LayerKVCache::new(4, 2, 2, KVLayout::Transposed);
-        cache.append_token(&[1.0, 2.0, 3.0, 4.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
+        cache
+            .append_token(&[1.0, 2.0, 3.0, 4.0], &[10.0, 20.0, 30.0, 40.0])
+            .unwrap();
 
         // h0,d0,s0 and h0,d1,s0
         assert_eq!(cache.k[0], 1.0);
