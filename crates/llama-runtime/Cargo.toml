@@ -7,3 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+llama-engine = { path = "../llama-engine" }
+llama-tokenizer = { path = "../llama-tokenizer" }
+llama-sampling = { path = "../llama-sampling" }
+thiserror.workspace = true
