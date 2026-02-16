@@ -24,6 +24,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — Epic + user stories + milestones (tracks [#1](https://github.com/stevedores-org/llama.rs/issues/1), [#2](https://github.com/stevedores-org/llama.rs/issues/2))
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — Modular architecture, crate boundaries, invariants
 - [`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md) — TDD plan: unit/property/golden/parity/perf testing
+- [`.github/LABELS.md`](.github/LABELS.md) — Recommended gh labels (`cursor`, `llama.rs`, `docs`, `roadmap`, `priority`, `rag`); create with `./scripts/create-labels.sh`
 
 ## Development
 
