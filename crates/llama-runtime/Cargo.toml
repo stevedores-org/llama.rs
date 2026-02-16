@@ -6,6 +6,14 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["cpu"]
+cpu = []
+metal = []
+
 [dependencies]
-llama-kv = { path = "../llama-kv" }
+llama-engine = { path = "../llama-engine", version = "0.1.0" }
+llama-kv = { path = "../llama-kv", version = "0.1.0" }
+llama-tokenizer = { path = "../llama-tokenizer", version = "0.1.0" }
+llama-sampling = { path = "../llama-sampling", version = "0.1.0" }
 thiserror.workspace = true
