@@ -107,6 +107,7 @@ impl LayerKVCache {
     }
 
     /// Get shape of current cache state.
+    #[must_use]
     pub fn shape(&self) -> KVShape {
         KVShape::new(self.seq_len, self.n_heads, self.head_dim)
     }
@@ -263,11 +264,13 @@ impl LayerKVCache {
     }
 
     /// Memory used (in bytes, assuming f32 = 4 bytes).
+    #[must_use]
     pub fn memory_bytes(&self) -> usize {
         (self.k.len() + self.v.len()) * 4
     }
 
     /// Memory used for currently written cache (seq_len, not capacity).
+    #[must_use]
     pub fn memory_used_bytes(&self) -> usize {
         let used = self.seq_len * self.n_heads * self.head_dim;
         used * 8 // 4 bytes for K + 4 bytes for V
@@ -358,10 +361,10 @@ impl SessionKVCache {
         v_tokens: &[&[f32]],
     ) -> Result<(), KVError> {
         if k_tokens.len() != self.layers.len() || v_tokens.len() != self.layers.len() {
-            let got_len = if k_tokens.len() != self.layers.len() {
-                k_tokens.len()
-            } else {
+            let got_len = if k_tokens.len() == self.layers.len() {
                 v_tokens.len()
+            } else {
+                k_tokens.len()
             };
             return Err(KVError::ShapeMismatch {
                 expected: self.layers.len(),
@@ -407,10 +410,10 @@ impl SessionKVCache {
         prefill_len: usize,
     ) -> Result<(), KVError> {
         if k_seqs.len() != self.layers.len() || v_seqs.len() != self.layers.len() {
-            let got_len = if k_seqs.len() != self.layers.len() {
-                k_seqs.len()
-            } else {
+            let got_len = if k_seqs.len() == self.layers.len() {
                 v_seqs.len()
+            } else {
+                k_seqs.len()
             };
             return Err(KVError::ShapeMismatch {
                 expected: self.layers.len(),

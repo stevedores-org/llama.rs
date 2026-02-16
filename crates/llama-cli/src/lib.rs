@@ -128,10 +128,16 @@ impl TinyModel {
     }
 
     /// Embed a token ID into a d_model vector.
-    fn embed(&self, token_id: usize) -> Vec<f32> {
+    fn embed(&self, token_id: usize) -> Result<Vec<f32>, GenerateError> {
         let d = self.config.d_model;
+        if token_id >= self.config.vocab_size {
+            return Err(GenerateError::TokenOutOfRange {
+                token_id,
+                vocab_size: self.config.vocab_size,
+            });
+        }
         let offset = token_id * d;
-        self.embeddings[offset..offset + d].to_vec()
+        Ok(self.embeddings[offset..offset + d].to_vec())
     }
 
     /// Matrix-vector multiply: x @ W where W is [in_dim, out_dim] row-major.
@@ -160,7 +166,7 @@ impl TinyModel {
         let d = c.d_model;
 
         // 1. Embed token
-        let x = self.embed(token_id);
+        let x = self.embed(token_id)?;
 
         // 2. Pre-attention norm
         let x_norm = rms_norm(&x, &self.norm1_weight, c.norm_eps)?;
@@ -210,7 +216,7 @@ impl TinyModel {
         &self,
         token_ids: &[usize],
         kv_cache: &mut LayerKVCache,
-    ) -> Result<Vec<f32>, ModelError> {
+    ) -> Result<Vec<f32>, GenerateError> {
         let c = &self.config;
         let d = c.d_model;
 
@@ -218,7 +224,7 @@ impl TinyModel {
         let mut last_logits = vec![0.0; c.vocab_size];
 
         for (pos, &tok) in token_ids.iter().enumerate() {
-            let x = self.embed(tok);
+            let x = self.embed(tok)?;
             let x_norm = rms_norm(&x, &self.norm1_weight, c.norm_eps)?;
 
             let mut q = Self::matvec(&x_norm, &self.w_q, d, d);
@@ -227,11 +233,12 @@ impl TinyModel {
 
             apply_rope(&mut q, &mut k, pos, c.n_heads, c.head_dim, c.rope_base)?;
 
-            kv_cache
-                .append_token(&k, &v)
-                .map_err(|e| ModelError::Shape(format!("kv append failed: {e}")))?;
+            kv_cache.append_token(&k, &v)?;
 
-            // Only compute full attention + MLP for last token (optimization)
+            // Only compute full attention + MLP for last token (optimization).
+            // This is valid for a single-layer model because K,V are linear
+            // projections of the input embeddings and don't depend on attention
+            // output. Multi-layer models would need full computation per token.
             if pos == token_ids.len() - 1 {
                 let seq_len = kv_cache.seq_len;
                 let keys = &kv_cache.k[..seq_len * d];
@@ -272,8 +279,10 @@ pub struct GenerateResult {
 /// Run the full generation pipeline.
 ///
 /// tokenizer.encode(prompt) → prefill → decode loop → byte-value decoding.
-/// Note: uses byte-value decoding for demo output since the WhitespaceTokenizer's
-/// vocab is dynamic and may not contain model-generated token IDs.
+///
+/// Note: uses byte-value decoding for demo output since the `WhitespaceTokenizer`
+/// vocabulary is dynamic (built at encode time) and cannot decode model-generated
+/// token IDs. A fixed byte-level tokenizer would be needed for true round-trip.
 pub fn generate(
     prompt: &str,
     max_tokens: usize,
@@ -329,25 +338,25 @@ pub fn generate(
 
     // 5. Decode loop
     let mut generated_ids = prompt_ids.clone();
+    let mut history: Vec<i32> = prompt_ids.iter().map(|&id| id as i32).collect();
     let mut new_text = String::new();
 
     for _ in 0..max_tokens {
-        let next_token = sampler.sample(&logits, &[])? as usize;
+        let next_token_i32 = sampler.sample(&logits, &history)?;
+        let next_token = next_token_i32 as usize;
         generated_ids.push(next_token);
+        history.push(next_token_i32);
 
-        // Register the token in the tokenizer's vocab for decoding
-        // (WhitespaceTokenizer builds vocab on encode, so we need a workaround)
-        // For the demo, we decode as byte values
+        // Decode generated tokens as byte values (demo model uses 256-token vocab).
         let token_char = if next_token < 128 {
             char::from(next_token as u8)
         } else {
             '?'
         };
-        let chunk = token_char.to_string();
         if !new_text.is_empty() {
             new_text.push(' ');
         }
-        new_text.push_str(&chunk);
+        new_text.push(token_char);
 
         // Check max sequence length
         let position = generated_ids.len() - 1;

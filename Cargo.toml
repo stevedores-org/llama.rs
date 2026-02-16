@@ -7,11 +7,14 @@ members = [
     "crates/llama-runtime",
     "crates/llama-sampling",
     "crates/llama-kv",
+    "crates/llama-agents",
+    "crates/llama-rag",
     "crates/llama-cli",
+    "crates/llama-server",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/stevedores-org/llama.rs"
@@ -20,3 +23,4 @@ repository = "https://github.com/stevedores-org/llama.rs"
 thiserror = "2"
 uuid = { version = "1.6", features = ["v4"] }
 serde_json = "1"
+tracing = "0.1"
