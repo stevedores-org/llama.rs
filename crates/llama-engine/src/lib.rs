@@ -46,22 +46,25 @@ pub struct ModelHandle;
 /// Sessions hold runtime state (KV cache, token history, etc.) that persists
 /// across prefill and decode phases. Multiple sessions can exist simultaneously,
 /// each with its own independent state.
-#[derive(Debug, Clone)]
+///
+/// Sessions are intentionally not `Clone` — cloning would imply duplicating
+/// KV cache state, which is not a cheap or well-defined operation.
+#[derive(Debug)]
 pub struct Session {
     /// Unique session ID for tracking and logging.
-    pub id: String,
+    pub id: uuid::Uuid,
 }
 
 impl Session {
-    /// Create a new inference session.
+    /// Create a new inference session with a random UUID.
     pub fn new() -> Self {
         Self {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: uuid::Uuid::new_v4(),
         }
     }
 
     /// Create a session with an explicit ID (useful for testing/replay).
-    pub fn with_id(id: String) -> Self {
+    pub fn with_id(id: uuid::Uuid) -> Self {
         Self { id }
     }
 }
@@ -79,18 +82,13 @@ pub struct PrefillResult {
     pub tokens_processed: usize,
 }
 
-/// Streaming token output from the decode phase.
+/// Result of a single decode step.
 #[derive(Debug, Clone)]
-pub struct TokenStream {
-    /// First decoded token.
+pub struct DecodeResult {
+    /// The decoded token.
     pub token: TokenId,
 }
 
-/// The core engine trait — everything else plugs into this.
-///
-/// oxidizedRAG and oxidizedgraph both depend on *engine behavior*, not
-/// implementation details. You can swap CPU/Metal/FFI backends under
-/// `llama-runtime` without changing the app.
 /// The core engine trait — everything else plugs into this.
 ///
 /// Implementations provide inference, tokenization, and embedding functionality.
@@ -109,8 +107,8 @@ pub trait LlamaEngine: Send + Sync {
     /// Run the prefill phase: process prompt tokens and populate the KV cache.
     fn prefill(&self, session: &mut Session, tokens: &[TokenId]) -> Result<PrefillResult>;
 
-    /// Run the decode phase: stream tokens one at a time from the model.
-    fn decode(&self, session: &mut Session) -> Result<TokenStream>;
+    /// Run the decode phase: produce the next token from the model.
+    fn decode(&self, session: &mut Session) -> Result<DecodeResult>;
 
     /// Generate embeddings for a batch of texts (for oxidizedRAG integration).
     fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>>;
