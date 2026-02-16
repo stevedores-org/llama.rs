@@ -44,7 +44,10 @@ impl RuntimeVerifier {
 
     /// True test:
     /// full_forward(prompt) logits == prefill(prompt[:-1]) + decode(last_token) logits.
-    pub fn verify_kv_equivalence(&self, prompt: &[i32]) -> Result<KvEquivalenceReport, RuntimeError> {
+    pub fn verify_kv_equivalence(
+        &self,
+        prompt: &[i32],
+    ) -> Result<KvEquivalenceReport, RuntimeError> {
         if prompt.len() < 2 {
             return Err(RuntimeError::PromptTooShort);
         }
@@ -177,7 +180,13 @@ fn apply_position_rotation(v: &mut [f32; 2], position: usize) {
     v[1] = x0 * sin_t + x1 * cos_t;
 }
 
-fn attention_single_head(q: &[f32; 2], keys: &[f32], values: &[f32], seq_len: usize, dim: usize) -> [f32; 2] {
+fn attention_single_head(
+    q: &[f32; 2],
+    keys: &[f32],
+    values: &[f32],
+    seq_len: usize,
+    dim: usize,
+) -> [f32; 2] {
     let scale = 1.0 / (dim as f32).sqrt();
 
     let mut scores = vec![0.0f32; seq_len];

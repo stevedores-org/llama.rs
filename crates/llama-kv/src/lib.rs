@@ -188,7 +188,11 @@ impl LayerKVCache {
         for seq in 0..prefill_len {
             let src_offset = seq * self.n_heads * self.head_dim;
             let src_end = src_offset + self.n_heads * self.head_dim;
-            self.write_token_at_position(seq, &k_seq[src_offset..src_end], &v_seq[src_offset..src_end]);
+            self.write_token_at_position(
+                seq,
+                &k_seq[src_offset..src_end],
+                &v_seq[src_offset..src_end],
+            );
         }
         self.seq_len = prefill_len;
 
@@ -378,7 +382,9 @@ mod tests {
     #[test]
     fn layout_by_head_changes_memory_indexing() {
         let mut cache = LayerKVCache::new(4, 2, 2, KVLayout::ByHead);
-        cache.append_token(&[1.0, 2.0, 3.0, 4.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
+        cache
+            .append_token(&[1.0, 2.0, 3.0, 4.0], &[10.0, 20.0, 30.0, 40.0])
+            .unwrap();
 
         // head 0, seq 0
         assert_eq!(cache.k[0], 1.0);
@@ -391,7 +397,9 @@ mod tests {
     #[test]
     fn layout_transposed_changes_memory_indexing() {
         let mut cache = LayerKVCache::new(4, 2, 2, KVLayout::Transposed);
-        cache.append_token(&[1.0, 2.0, 3.0, 4.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
+        cache
+            .append_token(&[1.0, 2.0, 3.0, 4.0], &[10.0, 20.0, 30.0, 40.0])
+            .unwrap();
 
         // h0,d0,s0 and h0,d1,s0
         assert_eq!(cache.k[0], 1.0);

@@ -1,0 +1,21 @@
+[package]
+name = "llama-cli"
+description = "CLI tool for llama.rs inference"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "llama-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+llama-models = { path = "../llama-models" }
+llama-tokenizer = { path = "../llama-tokenizer" }
+llama-sampling = { path = "../llama-sampling" }
+llama-kv = { path = "../llama-kv" }
+thiserror.workspace = true
+
+[dev-dependencies]
