@@ -2,10 +2,96 @@
 //!
 //! Runtime execution and verification helpers for llama.rs.
 //!
-//! This crate includes a Phase-1 verification harness for LLAMA-006:
-//! `full_forward(prompt)` logits vs `prefill(prompt[:-1]) + decode(last_token)` logits.
+//! This crate includes:
+//! - A `MockEngine` demonstrating the narrow-waist `LlamaEngine` trait
+//! - A Phase-1 verification harness for LLAMA-006:
+//!   `full_forward(prompt)` logits vs `prefill(prompt[:-1]) + decode(last_token)` logits.
 
+use llama_engine::{
+    DecodeResult, LlamaEngine, LlamaError, ModelHandle, ModelSpec, PrefillResult, Result, Session,
+    TokenId,
+};
 use llama_kv::{KVLayout, LayerKVCache};
+use llama_sampling::{Sampler, SamplingConfig, SamplingStrategy};
+use llama_tokenizer::{Tokenizer, WhitespaceTokenizer};
+use std::sync::Mutex;
+
+// ---------------------------------------------------------------------------
+// MockEngine — Milestone A narrow-waist demonstration
+// ---------------------------------------------------------------------------
+
+/// A mock engine implementation for Milestone A.
+///
+/// Uses a simple whitespace tokenizer and greedy sampler to demonstrate
+/// the "narrow waist" API without requiring a real model or MLX backend.
+pub struct MockEngine {
+    tokenizer: WhitespaceTokenizer,
+    sampler: Mutex<Sampler>,
+}
+
+impl MockEngine {
+    pub fn new() -> Self {
+        Self {
+            tokenizer: WhitespaceTokenizer::new(),
+            sampler: Mutex::new(
+                Sampler::new(SamplingConfig {
+                    strategy: SamplingStrategy::Greedy,
+                    ..SamplingConfig::default()
+                })
+                .expect("default config is valid"),
+            ),
+        }
+    }
+}
+
+impl Default for MockEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LlamaEngine for MockEngine {
+    fn load_model(&self, _spec: &ModelSpec) -> Result<ModelHandle> {
+        Ok(ModelHandle)
+    }
+
+    fn tokenize(&self, text: &str) -> Result<Vec<TokenId>> {
+        self.tokenizer
+            .encode(text)
+            .map_err(|e| LlamaError::Tokenization(e.to_string()))
+    }
+
+    fn detokenize(&self, tokens: &[TokenId]) -> Result<String> {
+        self.tokenizer
+            .decode(tokens)
+            .map_err(|e| LlamaError::Tokenization(e.to_string()))
+    }
+
+    fn prefill(&self, _session: &mut Session, tokens: &[TokenId]) -> Result<PrefillResult> {
+        Ok(PrefillResult {
+            tokens_processed: tokens.len(),
+        })
+    }
+
+    fn decode(&self, _session: &mut Session) -> Result<DecodeResult> {
+        let mock_logits = vec![0.1, 0.5, 0.1, 0.1, 0.2];
+        let mut sampler = self.sampler.lock().unwrap();
+        let token = sampler
+            .sample(&mock_logits, &[])
+            .map_err(|e| LlamaError::Inference(format!("{}", e)))?;
+        Ok(DecodeResult {
+            token: token as TokenId,
+        })
+    }
+
+    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        Ok(texts.iter().map(|_| vec![0.0; 128]).collect())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RuntimeVerifier — LLAMA-006 KV equivalence true test
+// ---------------------------------------------------------------------------
 
 /// Errors for runtime verification routines.
 #[derive(Debug, thiserror::Error)]
@@ -47,7 +133,7 @@ impl RuntimeVerifier {
     pub fn verify_kv_equivalence(
         &self,
         prompt: &[i32],
-    ) -> Result<KvEquivalenceReport, RuntimeError> {
+    ) -> std::result::Result<KvEquivalenceReport, RuntimeError> {
         if prompt.len() < 2 {
             return Err(RuntimeError::PromptTooShort);
         }
@@ -64,7 +150,7 @@ impl RuntimeVerifier {
     pub fn verify_with_off_by_one_bug(
         &self,
         prompt: &[i32],
-    ) -> Result<KvEquivalenceReport, RuntimeError> {
+    ) -> std::result::Result<KvEquivalenceReport, RuntimeError> {
         if prompt.len() < 2 {
             return Err(RuntimeError::PromptTooShort);
         }
@@ -105,7 +191,7 @@ impl Default for ToyModel {
 }
 
 impl ToyModel {
-    fn full_forward(&self, prompt: &[i32]) -> Result<Vec<f32>, RuntimeError> {
+    fn full_forward(&self, prompt: &[i32]) -> std::result::Result<Vec<f32>, RuntimeError> {
         let seq_len = prompt.len();
         let mut keys = Vec::with_capacity(seq_len * 2);
         let mut values = Vec::with_capacity(seq_len * 2);
@@ -128,7 +214,7 @@ impl ToyModel {
         &self,
         prompt: &[i32],
         inject_off_by_one: bool,
-    ) -> Result<Vec<f32>, RuntimeError> {
+    ) -> std::result::Result<Vec<f32>, RuntimeError> {
         let prefill_len = prompt.len() - 1;
         let mut cache = LayerKVCache::new(prompt.len(), 1, 2, KVLayout::BySequence);
 
@@ -162,7 +248,7 @@ impl ToyModel {
         Ok(project_logits(&ctx, &self.out_proj))
     }
 
-    fn token_vec(&self, token: i32) -> Result<[f32; 2], RuntimeError> {
+    fn token_vec(&self, token: i32) -> std::result::Result<[f32; 2], RuntimeError> {
         let idx = usize::try_from(token).map_err(|_| RuntimeError::InvalidToken(token))?;
         self.embeddings
             .get(idx)
@@ -235,6 +321,47 @@ fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- MockEngine tests --
+
+    #[test]
+    fn mock_engine_tokenize_roundtrip() {
+        let engine = MockEngine::new();
+        let tokens = engine.tokenize("hello world").unwrap();
+        assert_eq!(tokens.len(), 2);
+
+        let text = engine.detokenize(&tokens).unwrap();
+        assert_eq!(text, "hello world");
+    }
+
+    #[test]
+    fn mock_engine_prefill_decode() {
+        let engine = MockEngine::new();
+        let mut session = Session::new();
+
+        let tokens = engine.tokenize("hello world").unwrap();
+        let prefill = engine.prefill(&mut session, &tokens).unwrap();
+        assert_eq!(prefill.tokens_processed, 2);
+
+        let result = engine.decode(&mut session).unwrap();
+        assert!(result.token >= 0);
+    }
+
+    #[test]
+    fn mock_engine_embed() {
+        let engine = MockEngine::new();
+        let embeddings = engine.embed(&["hello", "world"]).unwrap();
+        assert_eq!(embeddings.len(), 2);
+        assert_eq!(embeddings[0].len(), 128);
+    }
+
+    #[test]
+    fn mock_engine_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<MockEngine>();
+    }
+
+    // -- RuntimeVerifier tests --
 
     #[test]
     fn kv_true_test_equivalence_holds() {
