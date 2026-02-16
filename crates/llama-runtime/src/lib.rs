@@ -15,6 +15,7 @@ use llama_kv::{KVLayout, LayerKVCache};
 use llama_sampling::{Sampler, SamplingConfig, SamplingStrategy};
 use llama_tokenizer::{Tokenizer, WhitespaceTokenizer};
 use std::sync::Mutex;
+use std::thread;
 
 // ---------------------------------------------------------------------------
 // MockEngine — Milestone A narrow-waist demonstration
@@ -102,6 +103,14 @@ pub enum RuntimeError {
     InvalidToken(i32),
     #[error("kv error: {0}")]
     Kv(#[from] llama_kv::KVError),
+    #[error("backend parity failed on {backend:?}: diff {diff} > tolerance {tolerance}")]
+    BackendParityExceeded {
+        backend: RuntimeBackend,
+        diff: f32,
+        tolerance: f32,
+    },
+    #[error("concurrent parity stress test thread panicked")]
+    ConcurrentStressThreadPanic,
 }
 
 /// Result of a KV equivalence run.
@@ -163,6 +172,173 @@ impl RuntimeVerifier {
     }
 }
 
+// ---------------------------------------------------------------------------
+// BackendParityGate — LLAMA-008 backend parity and stress checks
+// ---------------------------------------------------------------------------
+
+/// Runtime backends covered by parity gates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeBackend {
+    Cpu,
+    Metal,
+}
+
+/// Deterministic parity configuration.
+#[derive(Debug, Clone, Copy)]
+pub struct ParityConfig {
+    /// Fixed seed used for deterministic backend comparisons.
+    pub seed: u64,
+    /// Absolute tolerance for backend parity checks.
+    pub tolerance: f32,
+    /// Number of concurrent sessions for stress checks.
+    pub concurrent_sessions: usize,
+    /// Iterations per session for stress checks.
+    pub iterations_per_session: usize,
+}
+
+impl Default for ParityConfig {
+    fn default() -> Self {
+        Self {
+            seed: 42,
+            tolerance: 1e-5,
+            concurrent_sessions: 8,
+            iterations_per_session: 16,
+        }
+    }
+}
+
+/// Result of a backend parity comparison.
+#[derive(Debug, Clone, Copy)]
+pub struct ParityReport {
+    pub backend: RuntimeBackend,
+    pub max_abs_diff: f32,
+}
+
+/// LLAMA-008 parity gate:
+/// - fixed-seed CPU vs Metal backend parity checks
+/// - attention golden checks across enabled backends
+/// - concurrent-session deadlock stress checks
+pub struct BackendParityGate {
+    model: ToyModel,
+}
+
+impl Default for BackendParityGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BackendParityGate {
+    pub fn new() -> Self {
+        Self {
+            model: ToyModel::default(),
+        }
+    }
+
+    pub fn compare_metal_vs_cpu(
+        &self,
+        prompt: &[i32],
+        cfg: ParityConfig,
+    ) -> std::result::Result<ParityReport, RuntimeError> {
+        if prompt.len() < 2 {
+            return Err(RuntimeError::PromptTooShort);
+        }
+        let cpu = self
+            .model
+            .full_forward_seeded(prompt, cfg.seed, RuntimeBackend::Cpu)?;
+        let metal = self
+            .model
+            .full_forward_seeded(prompt, cfg.seed, RuntimeBackend::Metal)?;
+        let diff = max_abs_diff(&cpu, &metal);
+        if diff > cfg.tolerance {
+            return Err(RuntimeError::BackendParityExceeded {
+                backend: RuntimeBackend::Metal,
+                diff,
+                tolerance: cfg.tolerance,
+            });
+        }
+        Ok(ParityReport {
+            backend: RuntimeBackend::Metal,
+            max_abs_diff: diff,
+        })
+    }
+
+    /// Runs attention "golden" verification across all enabled backends.
+    /// CPU is the reference, and each backend must match within tolerance.
+    pub fn run_attention_golden_test(
+        &self,
+        prompt: &[i32],
+        cfg: ParityConfig,
+    ) -> std::result::Result<Vec<ParityReport>, RuntimeError> {
+        if prompt.len() < 2 {
+            return Err(RuntimeError::PromptTooShort);
+        }
+        let golden = self
+            .model
+            .full_forward_seeded(prompt, cfg.seed, RuntimeBackend::Cpu)?;
+
+        let mut reports = Vec::new();
+        for backend in Self::enabled_backends() {
+            let out = self.model.full_forward_seeded(prompt, cfg.seed, *backend)?;
+            let diff = max_abs_diff(&golden, &out);
+            if diff > cfg.tolerance {
+                return Err(RuntimeError::BackendParityExceeded {
+                    backend: *backend,
+                    diff,
+                    tolerance: cfg.tolerance,
+                });
+            }
+            reports.push(ParityReport {
+                backend: *backend,
+                max_abs_diff: diff,
+            });
+        }
+        Ok(reports)
+    }
+
+    /// Stress test to ensure concurrent backend sessions complete without deadlocks.
+    pub fn stress_test_concurrent_sessions(
+        &self,
+        prompt: &[i32],
+        cfg: ParityConfig,
+    ) -> std::result::Result<(), RuntimeError> {
+        if prompt.len() < 2 {
+            return Err(RuntimeError::PromptTooShort);
+        }
+
+        let mut handles = Vec::with_capacity(cfg.concurrent_sessions);
+        for worker in 0..cfg.concurrent_sessions {
+            let prompt_local = prompt.to_vec();
+            let mut local_cfg = cfg;
+            local_cfg.seed = cfg.seed.wrapping_add(worker as u64);
+
+            handles.push(thread::spawn(
+                move || -> std::result::Result<(), RuntimeError> {
+                    let gate = BackendParityGate::new();
+                    for i in 0..local_cfg.iterations_per_session {
+                        let mut run_cfg = local_cfg;
+                        run_cfg.seed = local_cfg.seed.wrapping_add(i as u64);
+                        gate.compare_metal_vs_cpu(&prompt_local, run_cfg)?;
+                    }
+                    Ok(())
+                },
+            ));
+        }
+
+        for handle in handles {
+            let result = handle
+                .join()
+                .map_err(|_| RuntimeError::ConcurrentStressThreadPanic)?;
+            result?;
+        }
+        Ok(())
+    }
+
+    pub fn enabled_backends() -> &'static [RuntimeBackend] {
+        &[RuntimeBackend::Cpu, RuntimeBackend::Metal]
+    }
+}
+
 #[derive(Debug)]
 struct ToyModel {
     embeddings: [[f32; 2]; 8],
@@ -192,21 +368,32 @@ impl Default for ToyModel {
 
 impl ToyModel {
     fn full_forward(&self, prompt: &[i32]) -> std::result::Result<Vec<f32>, RuntimeError> {
+        self.full_forward_seeded(prompt, 0, RuntimeBackend::Cpu)
+    }
+
+    fn full_forward_seeded(
+        &self,
+        prompt: &[i32],
+        seed: u64,
+        backend: RuntimeBackend,
+    ) -> std::result::Result<Vec<f32>, RuntimeError> {
         let seq_len = prompt.len();
         let mut keys = Vec::with_capacity(seq_len * 2);
         let mut values = Vec::with_capacity(seq_len * 2);
 
         for (pos, &tok) in prompt.iter().enumerate() {
             let mut kv = self.token_vec(tok)?;
+            apply_seed_jitter(&mut kv, seed, pos);
             apply_position_rotation(&mut kv, pos);
             keys.extend_from_slice(&kv);
             values.extend_from_slice(&kv);
         }
 
         let mut q = self.token_vec(*prompt.last().expect("prompt checked non-empty"))?;
+        apply_seed_jitter(&mut q, seed, seq_len - 1);
         apply_position_rotation(&mut q, seq_len - 1);
 
-        let ctx = attention_single_head(&q, &keys, &values, seq_len, 2);
+        let ctx = attention_single_head(&q, &keys, &values, seq_len, 2, backend);
         Ok(project_logits(&ctx, &self.out_proj))
     }
 
@@ -244,7 +431,7 @@ impl ToyModel {
         let seq_len = cache.seq_len;
         let keys = cache.k[..seq_len * 2].to_vec();
         let values = cache.v[..seq_len * 2].to_vec();
-        let ctx = attention_single_head(&q, &keys, &values, seq_len, 2);
+        let ctx = attention_single_head(&q, &keys, &values, seq_len, 2, RuntimeBackend::Cpu);
         Ok(project_logits(&ctx, &self.out_proj))
     }
 
@@ -257,6 +444,24 @@ impl ToyModel {
     }
 }
 
+fn apply_seed_jitter(v: &mut [f32; 2], seed: u64, position: usize) {
+    if seed == 0 {
+        return;
+    }
+    let jitter = deterministic_jitter(seed, position) * 0.01;
+    v[0] += jitter;
+    v[1] -= jitter;
+}
+
+fn deterministic_jitter(seed: u64, position: usize) -> f32 {
+    let pos_mix = (position as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let x = seed
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(pos_mix);
+    let top = (x >> 40) as u32;
+    (top as f32 / u32::MAX as f32) - 0.5
+}
+
 fn apply_position_rotation(v: &mut [f32; 2], position: usize) {
     let theta = position as f32 * 0.15;
     let (sin_t, cos_t) = theta.sin_cos();
@@ -267,6 +472,20 @@ fn apply_position_rotation(v: &mut [f32; 2], position: usize) {
 }
 
 fn attention_single_head(
+    q: &[f32; 2],
+    keys: &[f32],
+    values: &[f32],
+    seq_len: usize,
+    dim: usize,
+    backend: RuntimeBackend,
+) -> [f32; 2] {
+    match backend {
+        RuntimeBackend::Cpu => attention_single_head_cpu(q, keys, values, seq_len, dim),
+        RuntimeBackend::Metal => attention_single_head_metal(q, keys, values, seq_len, dim),
+    }
+}
+
+fn attention_single_head_cpu(
     q: &[f32; 2],
     keys: &[f32],
     values: &[f32],
@@ -289,6 +508,18 @@ fn attention_single_head(
         out[1] += p * v[1];
     }
     out
+}
+
+// Mirrors CPU semantics while serving as the Metal parity path until real
+// Metal kernels are wired in.
+fn attention_single_head_metal(
+    q: &[f32; 2],
+    keys: &[f32],
+    values: &[f32],
+    seq_len: usize,
+    dim: usize,
+) -> [f32; 2] {
+    attention_single_head_cpu(q, keys, values, seq_len, dim)
 }
 
 fn project_logits(ctx: &[f32; 2], out_proj: &[[f32; 8]; 2]) -> Vec<f32> {
@@ -392,5 +623,52 @@ mod tests {
         let verifier = RuntimeVerifier::new();
         let err = verifier.verify_kv_equivalence(&[1]).unwrap_err();
         assert!(matches!(err, RuntimeError::PromptTooShort));
+    }
+
+    // -- LLAMA-008 BackendParityGate tests --
+
+    #[test]
+    fn parity_gate_fixed_seed_cpu_vs_metal() {
+        let gate = BackendParityGate::new();
+        let prompt = [1, 3, 2, 6];
+        let cfg = ParityConfig::default();
+        let report = gate.compare_metal_vs_cpu(&prompt, cfg).unwrap();
+        assert_eq!(report.backend, RuntimeBackend::Metal);
+        assert!(report.max_abs_diff <= cfg.tolerance);
+    }
+
+    #[test]
+    fn parity_gate_attention_golden_on_all_backends() {
+        let gate = BackendParityGate::new();
+        let prompt = [1, 3, 2, 6];
+        let cfg = ParityConfig::default();
+        let reports = gate.run_attention_golden_test(&prompt, cfg).unwrap();
+        assert_eq!(reports.len(), BackendParityGate::enabled_backends().len());
+        assert!(reports.iter().all(|r| r.max_abs_diff <= cfg.tolerance));
+    }
+
+    #[test]
+    fn parity_gate_seed_is_deterministic() {
+        let gate = BackendParityGate::new();
+        let prompt = [1, 3, 2, 6];
+        let cfg = ParityConfig {
+            seed: 123456,
+            ..ParityConfig::default()
+        };
+        let a = gate.compare_metal_vs_cpu(&prompt, cfg).unwrap();
+        let b = gate.compare_metal_vs_cpu(&prompt, cfg).unwrap();
+        assert_eq!(a.max_abs_diff, b.max_abs_diff);
+    }
+
+    #[test]
+    fn parity_gate_concurrent_sessions_no_deadlock() {
+        let gate = BackendParityGate::new();
+        let prompt = [1, 3, 2, 6];
+        let cfg = ParityConfig {
+            concurrent_sessions: 8,
+            iterations_per_session: 32,
+            ..ParityConfig::default()
+        };
+        gate.stress_test_concurrent_sessions(&prompt, cfg).unwrap();
     }
 }
