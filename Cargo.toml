@@ -1,19 +1,19 @@
-[package]
-name = "llama-rs"
+[workspace]
+resolver = "2"
+members = [
+    "crates/llama-engine",
+    "crates/llama-tokenizer",
+    "crates/llama-models",
+    "crates/llama-runtime",
+    "crates/llama-sampling",
+    "crates/llama-kv",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "Rust bindings and tools for llama.cpp"
-repository = "https://github.com/stevedores-org/llama.rs"
 license = "MIT"
+repository = "https://github.com/stevedores-org/llama.rs"
 
-[dependencies]
-
-[dev-dependencies]
-
-[[bin]]
-name = "llama-cli"
-path = "src/bin/cli.rs"
-
-[lib]
-name = "llama"
-path = "src/lib.rs"
+[workspace.dependencies]
+thiserror = "2"
