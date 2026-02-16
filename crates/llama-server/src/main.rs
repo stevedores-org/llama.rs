@@ -17,6 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_tokens: 256,
         default_temperature: 0.7,
         max_concurrent_sessions: max_concurrent,
+        eos_token_id: 2, // Llama default
     };
 
     // Session manager with concurrency limit

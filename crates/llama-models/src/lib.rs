@@ -312,9 +312,20 @@ fn softmax(x: &[f32]) -> Vec<f32> {
         return Vec::new();
     }
     let max = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    if max == f32::NEG_INFINITY {
-        // All values are -inf, return uniform distribution
+    if max.is_nan() || max == f32::NEG_INFINITY {
+        // All values are -inf or NaN, return uniform distribution
         return vec![1.0 / x.len() as f32; x.len()];
+    }
+    if max == f32::INFINITY {
+        // Handle +inf by splitting probability among all +inf values
+        let mut out = vec![0.0; x.len()];
+        let count = x.iter().filter(|&&v| v == f32::INFINITY).count();
+        for (i, &v) in x.iter().enumerate() {
+            if v == f32::INFINITY {
+                out[i] = 1.0 / count as f32;
+            }
+        }
+        return out;
     }
     let mut exps: Vec<f32> = x.iter().map(|v| (v - max).exp()).collect();
     let sum: f32 = exps.iter().sum();

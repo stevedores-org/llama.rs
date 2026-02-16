@@ -25,9 +25,7 @@ fn load_unaligned_safetensors() {
     };
 
     // Add spaces to padding (valid JSON whitespace)
-    for _ in 0..padding_needed {
-        header_bytes.push(b' ');
-    }
+    header_bytes.extend(std::iter::repeat_n(b' ', padding_needed));
 
     let header_len = header_bytes.len();
     assert_eq!(

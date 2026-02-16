@@ -26,4 +26,6 @@ pub struct ServerConfig {
     pub default_temperature: f32,
     /// Maximum concurrent inference sessions.
     pub max_concurrent_sessions: usize,
+    /// End-of-sequence token ID (model-specific, e.g. 2 for Llama).
+    pub eos_token_id: llama_engine::TokenId,
 }
