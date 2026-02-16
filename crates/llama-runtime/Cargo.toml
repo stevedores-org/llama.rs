@@ -7,3 +7,5 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+llama-kv = { path = "../llama-kv" }
+thiserror.workspace = true
