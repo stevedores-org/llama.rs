@@ -218,6 +218,239 @@ impl ModelConfig {
     }
 }
 
+/// SwiGLU Feedforward Network.
+///
+/// Modern LLMs use gated linear units instead of standard MLPs.
+/// SwiGLU combines Swish activation with gating for improved expressivity.
+///
+/// Forward: output = (x @ w_gate) * swish(x @ w_up) @ w_down
+///
+/// # References
+/// - Shazeer et al. (2020): "GLU Variants Improve Transformer"
+/// - Used in: Llama 3, Qwen, Mistral
+#[derive(Debug, Clone)]
+pub struct SwiGLU {
+    /// Weight matrix for gate projection: [d_model, d_ff]
+    pub w_gate: Vec<f32>,
+    /// Weight matrix for up projection: [d_model, d_ff]
+    pub w_up: Vec<f32>,
+    /// Weight matrix for down projection: [d_ff, d_model]
+    pub w_down: Vec<f32>,
+}
+
+impl SwiGLU {
+    /// Create a new SwiGLU MLP layer.
+    ///
+    /// # Arguments
+    /// - `d_model`: Input/output dimension
+    /// - `d_ff`: Hidden dimension (intermediate size)
+    pub fn new(d_model: usize, d_ff: usize) -> Self {
+        Self {
+            w_gate: vec![0.1; d_model * d_ff],
+            w_up: vec![0.1; d_model * d_ff],
+            w_down: vec![0.1; d_ff * d_model],
+        }
+    }
+
+    /// Apply SwiGLU to input.
+    ///
+    /// # Arguments
+    /// - `x`: Input tensor, shape [seq_len, d_model] (flattened)
+    /// - `d_model`: Model dimension
+    /// - `d_ff`: Hidden dimension
+    ///
+    /// # Returns
+    /// Output tensor, shape [seq_len, d_model]
+    pub fn forward(&self, x: &[f32], d_model: usize, d_ff: usize) -> Vec<f32> {
+        assert_eq!(x.len() % d_model, 0);
+        let seq_len = x.len() / d_model;
+        let mut output = vec![0.0; x.len()];
+
+        // For each token
+        for t in 0..seq_len {
+            let x_slice = &x[t * d_model..(t + 1) * d_model];
+            let out_slice = &mut output[t * d_model..(t + 1) * d_model];
+
+            // Compute gate: x @ w_gate
+            let mut gate = vec![0.0; d_ff];
+            for i in 0..d_ff {
+                for j in 0..d_model {
+                    gate[i] += x_slice[j] * self.w_gate[j * d_ff + i];
+                }
+            }
+
+            // Compute up: x @ w_up
+            let mut up = vec![0.0; d_ff];
+            for i in 0..d_ff {
+                for j in 0..d_model {
+                    up[i] += x_slice[j] * self.w_up[j * d_ff + i];
+                }
+            }
+
+            // Apply Swish activation: swish(u) = u * sigmoid(u) = u / (1 + e^-u)
+            let mut swish_up = vec![0.0; d_ff];
+            for i in 0..d_ff {
+                let sigmoid = 1.0 / (1.0 + (-up[i]).exp());
+                swish_up[i] = up[i] * sigmoid;
+            }
+
+            // Gate the activation
+            let mut gated = vec![0.0; d_ff];
+            for i in 0..d_ff {
+                gated[i] = gate[i] * swish_up[i];
+            }
+
+            // Project down: gated @ w_down
+            for i in 0..d_model {
+                for j in 0..d_ff {
+                    out_slice[i] += gated[j] * self.w_down[j * d_model + i];
+                }
+            }
+        }
+
+        output
+    }
+}
+
+/// Multi-Head Self-Attention.
+///
+/// Core attention mechanism for transformers.
+/// Computes: Attention(Q, K, V) = softmax(Q·K^T / sqrt(d_k)) · V
+///
+/// With multiple heads:
+/// MultiHead(Q, K, V) = Concat(head_1, ..., head_h) @ W^O
+#[derive(Debug, Clone)]
+pub struct Attention {
+    /// Query projection: [d_model, d_model]
+    pub w_q: Vec<f32>,
+    /// Key projection: [d_model, d_model]
+    pub w_k: Vec<f32>,
+    /// Value projection: [d_model, d_model]
+    pub w_v: Vec<f32>,
+    /// Output projection: [d_model, d_model]
+    pub w_o: Vec<f32>,
+    /// Number of attention heads
+    pub n_heads: usize,
+    /// Dimension per head
+    pub head_dim: usize,
+}
+
+impl Attention {
+    /// Create a new multi-head attention layer.
+    ///
+    /// # Arguments
+    /// - `d_model`: Total model dimension
+    /// - `n_heads`: Number of attention heads
+    pub fn new(d_model: usize, n_heads: usize) -> Self {
+        let head_dim = d_model / n_heads;
+        assert_eq!(
+            d_model % n_heads,
+            0,
+            "d_model must be divisible by n_heads"
+        );
+
+        Self {
+            w_q: vec![0.1; d_model * d_model],
+            w_k: vec![0.1; d_model * d_model],
+            w_v: vec![0.1; d_model * d_model],
+            w_o: vec![0.1; d_model * d_model],
+            n_heads,
+            head_dim,
+        }
+    }
+
+    /// Softmax function for attention scores.
+    fn softmax(logits: &[f32]) -> Vec<f32> {
+        let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exps: Vec<f32> = logits.iter().map(|x| (x - max).exp()).collect();
+        let sum: f32 = exps.iter().sum();
+        exps.iter().map(|x| x / sum).collect()
+    }
+
+    /// Apply attention to queries, keys, values.
+    ///
+    /// # Arguments
+    /// - `q`: Query tensor, shape [seq_len, d_model]
+    /// - `k`: Key tensor, shape [seq_len, d_model]
+    /// - `v`: Value tensor, shape [seq_len, d_model]
+    /// - `d_model`: Model dimension
+    ///
+    /// # Returns
+    /// Attention output, shape [seq_len, d_model]
+    pub fn forward(&self, q: &[f32], k: &[f32], v: &[f32], d_model: usize) -> Vec<f32> {
+        let seq_len = q.len() / d_model;
+        assert_eq!(k.len(), v.len());
+
+        // Project Q, K, V
+        let mut q_proj = vec![0.0; q.len()];
+        for i in 0..q.len() {
+            for j in 0..d_model {
+                q_proj[i] += q[i / d_model * d_model + j] * self.w_q[j * d_model + (i % d_model)];
+            }
+        }
+
+        let mut k_proj = vec![0.0; k.len()];
+        for i in 0..k.len() {
+            for j in 0..d_model {
+                k_proj[i] +=
+                    k[i / d_model * d_model + j] * self.w_k[j * d_model + (i % d_model)];
+            }
+        }
+
+        let mut v_proj = vec![0.0; v.len()];
+        for i in 0..v.len() {
+            for j in 0..d_model {
+                v_proj[i] +=
+                    v[i / d_model * d_model + j] * self.w_v[j * d_model + (i % d_model)];
+            }
+        }
+
+        // Compute attention scores: Q·K^T / sqrt(d_head)
+        let scale = 1.0 / (self.head_dim as f32).sqrt();
+        let mut scores = vec![0.0; seq_len * seq_len];
+
+        for i in 0..seq_len {
+            for j in 0..seq_len {
+                let mut score = 0.0;
+                for h in 0..self.n_heads {
+                    for d in 0..self.head_dim {
+                        let idx_q = i * d_model + h * self.head_dim + d;
+                        let idx_k = j * d_model + h * self.head_dim + d;
+                        score += q_proj[idx_q] * k_proj[idx_k];
+                    }
+                }
+                scores[i * seq_len + j] = score * scale;
+            }
+        }
+
+        // Apply softmax attention weights
+        let mut attn_weights = vec![vec![0.0; seq_len]; seq_len];
+        for i in 0..seq_len {
+            let row_scores = &scores[i * seq_len..(i + 1) * seq_len];
+            let weights = Self::softmax(row_scores);
+            attn_weights[i] = weights;
+        }
+
+        // Apply attention to values and project output
+        let mut output = vec![0.0; seq_len * d_model];
+
+        for i in 0..seq_len {
+            for j in 0..d_model {
+                let mut val = 0.0;
+                for t in 0..seq_len {
+                    for d in 0..d_model {
+                        val += attn_weights[i][t] * v_proj[t * d_model + d]
+                            * self.w_o[d * d_model + j];
+                    }
+                }
+                output[i * d_model + j] = val;
+            }
+        }
+
+        output
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,5 +550,60 @@ mod tests {
         assert_eq!(config.d_model, 4096);
         assert_eq!(config.rope_base, 1000000.0);
         assert_eq!(config.head_dim(), 128);
+    }
+
+    #[test]
+    fn swiglu_shape() {
+        let mlp = SwiGLU::new(256, 1024);
+        let input = vec![0.1; 256]; // 1 token, 256-dim
+        let output = mlp.forward(&input, 256, 1024);
+
+        assert_eq!(output.len(), 256, "Output should match input dimension");
+    }
+
+    #[test]
+    fn swiglu_sequence() {
+        let mlp = SwiGLU::new(64, 256);
+        let input = vec![0.1; 256]; // 4 tokens, 64-dim each
+        let output = mlp.forward(&input, 64, 256);
+
+        assert_eq!(output.len(), 256);
+        assert!(output.iter().all(|v| !v.is_nan()));
+    }
+
+    #[test]
+    fn attention_shape() {
+        let attn = Attention::new(256, 8);
+        let q = vec![0.1; 256]; // 1 token, 256-dim
+        let k = vec![0.1; 256];
+        let v = vec![0.1; 256];
+
+        let output = attn.forward(&q, &k, &v, 256);
+        assert_eq!(output.len(), 256);
+    }
+
+    #[test]
+    fn attention_sequence() {
+        let attn = Attention::new(64, 4); // 4 heads, 16-dim per head
+        let seq_len = 4;
+        let d_model = 64;
+
+        let q = vec![0.1; seq_len * d_model];
+        let k = vec![0.1; seq_len * d_model];
+        let v = vec![0.1; seq_len * d_model];
+
+        let output = attn.forward(&q, &k, &v, d_model);
+        assert_eq!(output.len(), seq_len * d_model);
+        assert!(output.iter().all(|v| !v.is_nan()));
+    }
+
+    #[test]
+    fn attention_self_attention() {
+        let attn = Attention::new(32, 2);
+        // Same Q, K, V means self-attention
+        let x = vec![0.1; 32]; // 1 token, 32-dim
+        let output = attn.forward(&x, &x, &x, 32);
+
+        assert_eq!(output.len(), x.len());
     }
 }
