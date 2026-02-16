@@ -7,7 +7,7 @@
 | Milestone | Status | Notes |
 |-----------|--------|-------|
 | A — "Hello Inference" | In Progress | Scaffold done, tokenizer done, remaining items open |
-| B — KV Cache Correctness | Not started | PR #18 open but unmerged |
+| B — KV Cache Correctness | Not started | PR #18 merged |
 | C — Real Weight Loading | Not started | |
 | D — Metal Enablement | Not started | |
 | E — RAG + Agents | Not started | |
@@ -24,7 +24,7 @@ Implement a single-block forward pass on the CPU backend so that a tiny model ca
 - [x] Workspace scaffolding — PR #16 (merged)
 - [x] Tokenizer trait + reference impl — PR #17, #22 (merged)
 - [x] Sampling crate — PR #21 (open)
-- [ ] KV cache — PR #18 (open)
+- [x] KV cache — PR #18 (merged)
 - [ ] **Tiny model forward pass** — single block on CPU backend *(next)*
 - [ ] CLI `llama-cli generate` — not started
 
