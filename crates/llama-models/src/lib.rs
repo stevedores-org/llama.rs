@@ -9,6 +9,108 @@
 //! - **Attention**: Multi-head self-attention with caching
 //! - **SafeTensors**: Weight loading from model files
 
+use std::path::Path;
+
+/// Error type for weight loading operations.
+#[derive(Debug, thiserror::Error)]
+pub enum WeightError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("SafeTensors error: {0}")]
+    SafeTensors(String),
+
+    #[error("Shape mismatch: expected {expected}, got {got}")]
+    ShapeMismatch { expected: usize, got: usize },
+
+    #[error("Missing weight: {0}")]
+    MissingWeight(String),
+}
+
+pub type WeightResult<T> = Result<T, WeightError>;
+
+/// Weight key naming convention for model architectures.
+pub struct WeightNames {
+    pub embed_tokens: String,
+    pub norm_weight: String,
+    pub lm_head: String,
+}
+
+impl WeightNames {
+    /// Llama 3 weight naming.
+    pub fn llama3() -> Self {
+        Self {
+            embed_tokens: "model.embed_tokens.weight".to_string(),
+            norm_weight: "model.norm.weight".to_string(),
+            lm_head: "lm_head.weight".to_string(),
+        }
+    }
+
+    /// Qwen weight naming.
+    pub fn qwen() -> Self {
+        Self {
+            embed_tokens: "model.embed_tokens.weight".to_string(),
+            norm_weight: "model.norm.weight".to_string(),
+            lm_head: "lm_head.weight".to_string(),
+        }
+    }
+}
+
+/// Weight loader for safetensors format.
+pub struct WeightLoader {
+    pub weights: safetensors::SafeTensors<'static>,
+}
+
+impl WeightLoader {
+    /// Load weights from a safetensors file.
+    pub fn from_file<P: AsRef<Path>>(path: P) -> WeightResult<Self> {
+        let data = std::fs::read(path)?;
+        let data_static = Box::leak(data.into_boxed_slice());
+        let weights = safetensors::SafeTensors::deserialize(data_static)
+            .map_err(|e| WeightError::SafeTensors(e.to_string()))?;
+
+        Ok(Self { weights })
+    }
+
+    /// Load a weight tensor by name.
+    pub fn load_weight(&self, name: &str, expected_size: usize) -> WeightResult<Vec<f32>> {
+        let tensor = self
+            .weights
+            .tensor(name)
+            .map_err(|_| WeightError::MissingWeight(name.to_string()))?;
+
+        let data = tensor
+            .data()
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect::<Vec<_>>();
+
+        if data.len() != expected_size {
+            return Err(WeightError::ShapeMismatch {
+                expected: expected_size,
+                got: data.len(),
+            });
+        }
+
+        Ok(data)
+    }
+
+    /// Load embeddings from model file.
+    pub fn load_embeddings(&self, names: &WeightNames, vocab_size: usize, d_model: usize) -> WeightResult<Vec<f32>> {
+        self.load_weight(&names.embed_tokens, vocab_size * d_model)
+    }
+
+    /// Load final normalization weights.
+    pub fn load_norm(&self, names: &WeightNames, d_model: usize) -> WeightResult<Vec<f32>> {
+        self.load_weight(&names.norm_weight, d_model)
+    }
+
+    /// Load output projection weights.
+    pub fn load_lm_head(&self, names: &WeightNames, d_model: usize, vocab_size: usize) -> WeightResult<Vec<f32>> {
+        self.load_weight(&names.lm_head, d_model * vocab_size)
+    }
+}
+
 /// Root Mean Square Layer Normalization.
 ///
 /// Used in Llama 3, Qwen, and modern LLMs as a simpler alternative to LayerNorm.
@@ -504,6 +606,37 @@ impl LlamaModel {
 
         prompt
     }
+
+    /// Load model weights from a safetensors file.
+    pub fn load_weights<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+        names: &WeightNames,
+    ) -> WeightResult<()> {
+        let loader = WeightLoader::from_file(path)?;
+
+        // Load embeddings
+        self.embeddings = loader.load_embeddings(names, self.config.vocab_size, self.config.d_model)?;
+
+        // Load final norm weights
+        self.norm.weight = loader.load_norm(names, self.config.d_model)?;
+
+        // Load output projection
+        self.lm_head = loader.load_lm_head(names, self.config.d_model, self.config.vocab_size)?;
+
+        Ok(())
+    }
+
+    /// Create model from config and load weights from file.
+    pub fn load_from_file<P: AsRef<Path>>(
+        config: ModelConfig,
+        weights_path: P,
+        names: &WeightNames,
+    ) -> WeightResult<Self> {
+        let mut model = Self::new(config);
+        model.load_weights(weights_path, names)?;
+        Ok(model)
+    }
 }
 
 impl Attention {
@@ -853,5 +986,47 @@ mod tests {
 
         assert!(generated.len() > prompt.len());
         assert!(generated.len() <= model.config.max_seq_len);
+    }
+
+    #[test]
+    fn weight_names_llama3() {
+        let names = WeightNames::llama3();
+        assert_eq!(names.embed_tokens, "model.embed_tokens.weight");
+        assert_eq!(names.norm_weight, "model.norm.weight");
+        assert_eq!(names.lm_head, "lm_head.weight");
+    }
+
+    #[test]
+    fn weight_names_qwen() {
+        let names = WeightNames::qwen();
+        assert_eq!(names.embed_tokens, "model.embed_tokens.weight");
+        assert_eq!(names.norm_weight, "model.norm.weight");
+        assert_eq!(names.lm_head, "lm_head.weight");
+    }
+
+    #[test]
+    fn weight_error_display() {
+        let err = WeightError::MissingWeight("test_weight".to_string());
+        assert_eq!(err.to_string(), "Missing weight: test_weight");
+
+        let err = WeightError::ShapeMismatch {
+            expected: 100,
+            got: 50,
+        };
+        assert_eq!(err.to_string(), "Shape mismatch: expected 100, got 50");
+    }
+
+    #[test]
+    fn llama_model_weight_loading_api() {
+        let config = ModelConfig::llama3_8b();
+        let model = LlamaModel::new(config.clone());
+
+        // Verify model has correct weight dimensions
+        assert_eq!(
+            model.embeddings.len(),
+            config.vocab_size * config.d_model
+        );
+        assert_eq!(model.norm.weight.len(), config.d_model);
+        assert_eq!(model.lm_head.len(), config.d_model * config.vocab_size);
     }
 }

@@ -7,3 +7,5 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+thiserror = "1.0"
+safetensors = "0.4"
