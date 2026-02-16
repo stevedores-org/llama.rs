@@ -24,13 +24,15 @@ pub struct ModelSpec {
 }
 
 /// Opaque handle to a loaded model.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelHandle {
-    pub id: String,
+    pub id: u64,
 }
 
 /// Represents an active inference session with its own KV cache state.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Session {
-    pub id: String,
+    pub id: u64,
 }
 
 /// Result of the prefill phase (prompt processing).
