@@ -545,8 +545,11 @@ fn softmax(scores: &[f32]) -> Vec<f32> {
     if scores.is_empty() {
         return Vec::new();
     }
+    if scores.iter().any(|v| v.is_nan()) {
+        return vec![1.0 / scores.len() as f32; scores.len()];
+    }
     let max_v = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    if max_v.is_nan() || max_v == f32::NEG_INFINITY {
+    if max_v == f32::NEG_INFINITY {
         return vec![1.0 / scores.len() as f32; scores.len()];
     }
     if max_v == f32::INFINITY {
@@ -685,6 +688,41 @@ mod tests {
         let a = gate.compare_metal_vs_cpu(&prompt, cfg).unwrap();
         let b = gate.compare_metal_vs_cpu(&prompt, cfg).unwrap();
         assert_eq!(a.max_abs_diff, b.max_abs_diff);
+    }
+
+    #[test]
+    fn softmax_handles_all_neg_inf() {
+        let probs = softmax(&[f32::NEG_INFINITY, f32::NEG_INFINITY]);
+        assert_eq!(probs, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn softmax_handles_all_nan() {
+        let probs = softmax(&[f32::NAN, f32::NAN]);
+        assert_eq!(probs, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn softmax_handles_mixed_nan_and_finite() {
+        let probs = softmax(&[f32::NAN, 1.0, 2.0]);
+        let expected = 1.0 / 3.0;
+        for p in &probs {
+            assert!((p - expected).abs() < 1e-7);
+        }
+    }
+
+    #[test]
+    fn softmax_handles_all_pos_inf() {
+        let probs = softmax(&[f32::INFINITY, f32::INFINITY]);
+        assert_eq!(probs, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn softmax_handles_mixed_pos_inf_and_finite() {
+        let probs = softmax(&[f32::INFINITY, 1.0, f32::INFINITY]);
+        assert_eq!(probs[0], 0.5);
+        assert_eq!(probs[1], 0.0);
+        assert_eq!(probs[2], 0.5);
     }
 
     #[test]

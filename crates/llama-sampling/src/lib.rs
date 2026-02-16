@@ -188,10 +188,14 @@ fn softmax_with_temperature(logits: &[f32], temperature: f32) -> Result<Vec<f32>
     }
 
     let scaled: Vec<f32> = logits.iter().map(|&x| x / temperature).collect();
+
+    if scaled.iter().any(|v| v.is_nan()) {
+        return Ok(vec![1.0 / logits.len() as f32; logits.len()]);
+    }
+
     let max_val = scaled.iter().copied().fold(f32::NEG_INFINITY, f32::max);
 
-    if max_val.is_nan() || max_val == f32::NEG_INFINITY {
-        // All logits are -inf or NaN, return uniform distribution
+    if max_val == f32::NEG_INFINITY {
         return Ok(vec![1.0 / logits.len() as f32; logits.len()]);
     }
 
@@ -400,12 +404,44 @@ mod tests {
     }
 
     #[test]
-    fn softmax_handles_all_inf() {
+    fn softmax_handles_all_neg_inf() {
         let logits = vec![f32::NEG_INFINITY, f32::NEG_INFINITY];
         let probs = softmax_with_temperature(&logits, 1.0).unwrap();
-        assert_eq!(probs.len(), 2);
+        assert_eq!(probs, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn softmax_handles_all_nan() {
+        let logits = vec![f32::NAN, f32::NAN];
+        let probs = softmax_with_temperature(&logits, 1.0).unwrap();
+        assert_eq!(probs, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn softmax_handles_mixed_nan_and_finite() {
+        let logits = vec![f32::NAN, 1.0, 2.0];
+        let probs = softmax_with_temperature(&logits, 1.0).unwrap();
+        // Mixed NaN should return uniform distribution
+        let expected = 1.0 / 3.0;
+        for p in &probs {
+            assert!((p - expected).abs() < 1e-7);
+        }
+    }
+
+    #[test]
+    fn softmax_handles_all_pos_inf() {
+        let logits = vec![f32::INFINITY, f32::INFINITY];
+        let probs = softmax_with_temperature(&logits, 1.0).unwrap();
+        assert_eq!(probs, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn softmax_handles_mixed_pos_inf_and_finite() {
+        let logits = vec![f32::INFINITY, 1.0, f32::INFINITY];
+        let probs = softmax_with_temperature(&logits, 1.0).unwrap();
         assert_eq!(probs[0], 0.5);
-        assert_eq!(probs[1], 0.5);
+        assert_eq!(probs[1], 0.0);
+        assert_eq!(probs[2], 0.5);
     }
 
     #[test]
