@@ -582,6 +582,27 @@ mod tests {
     }
 
     #[test]
+    fn session_n_layers_and_layer_accessor() {
+        let session = SessionKVCache::new(4, 256, 2, 4, KVLayout::BySequence);
+        assert_eq!(session.n_layers(), 4);
+        assert!(session.layer(0).is_some());
+        assert!(session.layer(3).is_some());
+        assert!(session.layer(4).is_none());
+    }
+
+    #[test]
+    fn session_append_token_atomic() {
+        let mut session = SessionKVCache::new(2, 256, 2, 4, KVLayout::BySequence);
+        let k_token = vec![0.1; 8];
+        let v_token = vec![0.2; 8];
+        let k_tokens: Vec<&[f32]> = vec![k_token.as_slice(); 2];
+        let v_tokens: Vec<&[f32]> = vec![v_token.as_slice(); 2];
+
+        session.append_token(&k_tokens, &v_tokens).unwrap();
+        assert_eq!(session.seq_len(), 1);
+    }
+
+    #[test]
     fn session_write_prefill_across_layers() {
         let mut session = SessionKVCache::new(2, 10, 2, 4, KVLayout::BySequence);
         let k_seq = vec![0.1; 32]; // 4 tokens
