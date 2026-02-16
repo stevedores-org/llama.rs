@@ -60,6 +60,13 @@ pub enum KVLayout {
     Transposed,
 }
 
+/// Paging/eviction interface for sliding-window KV behavior.
+pub trait KvPager {
+    /// Keep at most `window` most-recent tokens, evicting older entries.
+    /// Returns the number of evicted tokens.
+    fn apply_sliding_window(&mut self, window: usize) -> Result<usize, KVError>;
+}
+
 /// Reference KV cache. Stores K and V tensors for a single layer.
 #[derive(Debug, Clone)]
 pub struct LayerKVCache {
@@ -119,6 +126,17 @@ impl LayerKVCache {
                 let dst = self.index(seq, head, dim);
                 self.k[dst] = k_token[src];
                 self.v[dst] = v_token[src];
+            }
+        }
+    }
+
+    fn read_token_at_position(&self, seq: usize, k_out: &mut [f32], v_out: &mut [f32]) {
+        for head in 0..self.n_heads {
+            for dim in 0..self.head_dim {
+                let dst = head * self.head_dim + dim;
+                let src = self.index(seq, head, dim);
+                k_out[dst] = self.k[src];
+                v_out[dst] = self.v[src];
             }
         }
     }
@@ -203,6 +221,38 @@ impl LayerKVCache {
         self.seq_len = 0;
     }
 
+    /// Evict the oldest `count` tokens from cache, compacting remaining tokens to
+    /// the front. This defines the sliding-window behavior for all layouts.
+    pub fn evict_prefix(&mut self, count: usize) -> Result<(), KVError> {
+        if count > self.seq_len {
+            return Err(KVError::EvictionOutOfRange {
+                requested: count,
+                available: self.seq_len,
+            });
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        if count == self.seq_len {
+            self.clear();
+            return Ok(());
+        }
+
+        let keep = self.seq_len - count;
+        let token_width = self.n_heads * self.head_dim;
+        let mut k_tmp = vec![0.0f32; token_width];
+        let mut v_tmp = vec![0.0f32; token_width];
+
+        for new_seq in 0..keep {
+            let old_seq = new_seq + count;
+            self.read_token_at_position(old_seq, &mut k_tmp, &mut v_tmp);
+            self.write_token_at_position(new_seq, &k_tmp, &v_tmp);
+        }
+
+        self.seq_len = keep;
+        Ok(())
+    }
+
     /// Memory used (in bytes, assuming f32 = 4 bytes).
     pub fn memory_bytes(&self) -> usize {
         (self.k.len() + self.v.len()) * 4
@@ -224,6 +274,19 @@ pub enum KVError {
     ShapeMismatch { expected: usize, got: usize },
     #[error("KV cache must be empty for prefill")]
     NotEmpty,
+    #[error("eviction out of range: requested {requested}, available {available}")]
+    EvictionOutOfRange { requested: usize, available: usize },
+}
+
+impl KvPager for LayerKVCache {
+    fn apply_sliding_window(&mut self, window: usize) -> Result<usize, KVError> {
+        if self.seq_len <= window {
+            return Ok(0);
+        }
+        let evict = self.seq_len - window;
+        self.evict_prefix(evict)?;
+        Ok(evict)
+    }
 }
 
 /// A session-level KV cache for all layers.
@@ -269,6 +332,20 @@ impl SessionKVCache {
     /// Memory actively used by current seq_len.
     pub fn memory_used_bytes(&self) -> usize {
         self.layers.iter().map(|l| l.memory_used_bytes()).sum()
+    }
+}
+
+impl KvPager for SessionKVCache {
+    fn apply_sliding_window(&mut self, window: usize) -> Result<usize, KVError> {
+        let evict = self
+            .layers
+            .first()
+            .map(|l| l.seq_len.saturating_sub(window))
+            .unwrap_or(0);
+        for layer in &mut self.layers {
+            layer.evict_prefix(evict)?;
+        }
+        Ok(evict)
     }
 }
 
@@ -399,5 +476,67 @@ mod tests {
         // h1,d0,s0 and h1,d1,s0
         assert_eq!(cache.k[8], 3.0);
         assert_eq!(cache.k[12], 4.0);
+    }
+
+    #[test]
+    fn evict_prefix_compacts_oldest_tokens() {
+        let mut cache = LayerKVCache::new(8, 1, 2, KVLayout::BySequence);
+        cache.append_token(&[1.0, 1.1], &[10.0, 10.1]).unwrap(); // t0
+        cache.append_token(&[2.0, 2.1], &[20.0, 20.1]).unwrap(); // t1
+        cache.append_token(&[3.0, 3.1], &[30.0, 30.1]).unwrap(); // t2
+
+        cache.evict_prefix(1).unwrap();
+        assert_eq!(cache.seq_len, 2);
+
+        // Old t1 should now be first position.
+        assert_eq!(cache.k[0], 2.0);
+        assert_eq!(cache.k[1], 2.1);
+        // Old t2 should now be second.
+        assert_eq!(cache.k[2], 3.0);
+        assert_eq!(cache.k[3], 3.1);
+    }
+
+    #[test]
+    fn sliding_window_evicts_expected_count() {
+        let mut cache = LayerKVCache::new(8, 1, 2, KVLayout::BySequence);
+        for i in 0..5 {
+            let x = i as f32;
+            cache.append_token(&[x, x + 0.1], &[x + 10.0, x + 10.1]).unwrap();
+        }
+
+        let evicted = cache.apply_sliding_window(3).unwrap();
+        assert_eq!(evicted, 2);
+        assert_eq!(cache.seq_len, 3);
+    }
+
+    #[test]
+    fn session_sliding_window_applies_to_all_layers() {
+        let mut session = SessionKVCache::new(2, 8, 1, 2, KVLayout::BySequence);
+        for layer in &mut session.layers {
+            for i in 0..4 {
+                let x = i as f32;
+                layer.append_token(&[x, x + 0.1], &[x + 10.0, x + 10.1]).unwrap();
+            }
+        }
+
+        let evicted = session.apply_sliding_window(2).unwrap();
+        assert_eq!(evicted, 2);
+        for layer in &session.layers {
+            assert_eq!(layer.seq_len, 2);
+        }
+    }
+
+    #[test]
+    fn evict_prefix_out_of_range_errors() {
+        let mut cache = LayerKVCache::new(4, 1, 2, KVLayout::BySequence);
+        cache.append_token(&[1.0, 1.1], &[10.0, 10.1]).unwrap();
+        let err = cache.evict_prefix(2);
+        assert!(matches!(
+            err,
+            Err(KVError::EvictionOutOfRange {
+                requested: 2,
+                available: 1
+            })
+        ));
     }
 }
