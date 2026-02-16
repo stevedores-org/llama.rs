@@ -3,12 +3,15 @@ import { Link, useLocation } from "react-router-dom";
 interface NavItem {
   label: string;
   href: string;
+  external?: boolean;
 }
 
 interface NavSection {
   title: string;
   items: NavItem[];
 }
+
+const DOCS_BASE = "https://docs.stevedores.org";
 
 const navigation: NavSection[] = [
   {
@@ -32,11 +35,11 @@ const navigation: NavSection[] = [
     ],
   },
   {
-    title: "Ecosystem",
+    title: "Ecosystem Docs",
     items: [
-      { label: "oxidizedMLX", href: "/ecosystem/oxidized-mlx" },
-      { label: "oxidizedRAG", href: "/ecosystem/oxidized-rag" },
-      { label: "oxidizedgraph", href: "/ecosystem/oxidized-graph" },
+      { label: "oxidizedMLX", href: `${DOCS_BASE}/oxidizedMLX`, external: true },
+      { label: "oxidizedRAG", href: `${DOCS_BASE}/oxidizedRAG`, external: true },
+      { label: "oxidizedgraph", href: `${DOCS_BASE}/oxidizedgraph`, external: true },
     ],
   },
 ];
@@ -65,21 +68,25 @@ export default function Sidebar() {
               {section.title}
             </div>
             {section.items.map((item) => {
-              const active = pathname === item.href;
-              return (
-                <Link
-                  key={item.href}
-                  to={item.href}
-                  className={`flex items-center gap-2 px-5 py-[7px] text-[13px] border-l-2 transition-all ${
-                    active
-                      ? "border-orange-500 text-orange-400 bg-orange-500/[0.06] font-medium"
-                      : "border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40"
-                  }`}
-                >
-                  {section.title === "Crates" && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-current opacity-50" />
-                  )}
-                  {item.label}
+              const active = !item.external && pathname === item.href;
+              const cls = `flex items-center gap-2 px-5 py-[7px] text-[13px] border-l-2 transition-all ${
+                active
+                  ? "border-orange-500 text-orange-400 bg-orange-500/[0.06] font-medium"
+                  : "border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40"
+              }`;
+              const dot = section.title === "Crates" && (
+                <span className="w-1.5 h-1.5 rounded-full bg-current opacity-50" />
+              );
+              const arrow = item.external && (
+                <span className="ml-auto text-[10px] text-zinc-600">&nearr;</span>
+              );
+              return item.external ? (
+                <a key={item.href} href={item.href} className={cls}>
+                  {dot}{item.label}{arrow}
+                </a>
+              ) : (
+                <Link key={item.href} to={item.href} className={cls}>
+                  {dot}{item.label}
                 </Link>
               );
             })}

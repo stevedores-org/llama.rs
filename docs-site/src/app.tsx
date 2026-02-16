@@ -9,9 +9,6 @@ import LlamaModels from "./pages/crates/LlamaModels";
 import LlamaSampling from "./pages/crates/LlamaSampling";
 import LlamaKv from "./pages/crates/LlamaKv";
 import LlamaRuntime from "./pages/crates/LlamaRuntime";
-import OxidizedMLX from "./pages/ecosystem/OxidizedMLX";
-import OxidizedRAG from "./pages/ecosystem/OxidizedRAG";
-import OxidizedGraph from "./pages/ecosystem/OxidizedGraph";
 
 export default function App() {
   return (
@@ -26,9 +23,6 @@ export default function App() {
       <Route path="/crates/llama-sampling" element={<LlamaSampling />} />
       <Route path="/crates/llama-kv" element={<LlamaKv />} />
       <Route path="/crates/llama-runtime" element={<LlamaRuntime />} />
-      <Route path="/ecosystem/oxidized-mlx" element={<OxidizedMLX />} />
-      <Route path="/ecosystem/oxidized-rag" element={<OxidizedRAG />} />
-      <Route path="/ecosystem/oxidized-graph" element={<OxidizedGraph />} />
     </Routes>
   );
 }

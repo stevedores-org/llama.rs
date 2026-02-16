@@ -13,7 +13,7 @@ export default function Home() {
         </h1>
         <p className="text-lg text-zinc-400 mt-3 leading-relaxed max-w-xl">
           A modular Rust inference runtime for Llama-family models. Built on{" "}
-          <a href="https://github.com/stevedores-org/oxidizedMLX" className="text-orange-400 hover:text-orange-300">
+          <a href="https://docs.stevedores.org/oxidizedMLX" className="text-orange-400 hover:text-orange-300">
             oxidizedMLX
           </a>{" "}
           for Metal/CPU acceleration.
