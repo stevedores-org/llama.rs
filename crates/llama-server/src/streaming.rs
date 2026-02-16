@@ -8,7 +8,7 @@
 use axum::response::sse::{Event, Sse};
 use chrono::Utc;
 use futures::stream::Stream;
-use llama_engine::Session;
+use llama_engine::{Session, TokenId};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -23,8 +23,9 @@ use crate::state::AppState;
 /// session slot + semaphore permit.
 pub fn stream_chat_completion(
     state: AppState,
-    prompt_tokens: Vec<llama_engine::TokenId>,
+    prompt_tokens: Vec<TokenId>,
     max_tokens: usize,
+    eos_token_id: TokenId,
     cancel: CancellationToken,
     guard: SessionGuard,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
@@ -56,7 +57,24 @@ pub fn stream_chat_completion(
 
         // Decode loop: generate tokens and stream as content deltas
         let mut session = Session::new();
-        let _ = engine.prefill(&mut session, &prompt_tokens);
+        if let Err(e) = engine.prefill(&mut session, &prompt_tokens) {
+            tracing::error!(error = %e, "prefill failed in streaming path");
+            // Send finish chunk with error indication, then [DONE]
+            let error_chunk = ChatCompletionChunk {
+                id: request_id.clone(),
+                object: "chat.completion.chunk".to_string(),
+                created,
+                model: model.clone(),
+                choices: vec![ChatChoiceDelta {
+                    index: 0,
+                    delta: ChatDelta { role: None, content: None },
+                    finish_reason: Some("stop".to_string()),
+                }],
+            };
+            yield Ok(Event::default().data(serde_json::to_string(&error_chunk).unwrap()));
+            yield Ok(Event::default().data("[DONE]"));
+            return;
+        }
 
         let mut finish_reason = "stop";
         for i in 0..max_tokens {
@@ -75,7 +93,7 @@ pub fn stream_chat_completion(
             };
 
             // EOS check
-            if result.token == 2 {
+            if result.token == eos_token_id {
                 break;
             }
 

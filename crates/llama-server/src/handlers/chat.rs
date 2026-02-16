@@ -23,9 +23,28 @@ pub async fn handle_chat_completion(
     State(state): State<AppState>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Result<axum::response::Response, ServerError> {
+    // Warn about sampling parameters not yet plumbed through to the engine.
+    if let Some(t) = req.temperature {
+        if (t - 1.0).abs() > f32::EPSILON {
+            tracing::warn!(
+                temperature = t,
+                "temperature parameter accepted but not yet applied to sampling"
+            );
+        }
+    }
+    if let Some(p) = req.top_p {
+        if (p - 1.0).abs() > f32::EPSILON {
+            tracing::warn!(
+                top_p = p,
+                "top_p parameter accepted but not yet applied to sampling"
+            );
+        }
+    }
+
     let prompt = format_messages(&req.messages);
     let prompt_tokens = state.engine.tokenize(&prompt)?;
     let max_tokens = req.max_tokens.unwrap_or(state.config.max_tokens);
+    let eos_token_id = state.config.eos_token_id;
 
     let session_id = Uuid::new_v4();
     let guard = state
@@ -43,6 +62,7 @@ pub async fn handle_chat_completion(
             state,
             prompt_tokens,
             max_tokens,
+            eos_token_id,
             cancel,
             guard,
         )
@@ -56,16 +76,24 @@ pub async fn handle_chat_completion(
 
     let cancel = guard.cancellation_token();
     let mut generated_tokens = Vec::new();
+    let mut hit_eos = false;
     for _ in 0..max_tokens {
         if cancel.is_cancelled() {
             break;
         }
         let result = state.engine.decode(&mut session)?;
-        generated_tokens.push(result.token);
-        if result.token == 2 {
+        if result.token == eos_token_id {
+            hit_eos = true;
             break;
         }
+        generated_tokens.push(result.token);
     }
+
+    let finish_reason = if hit_eos || cancel.is_cancelled() {
+        "stop"
+    } else {
+        "length"
+    };
 
     let generated_text = state.engine.detokenize(&generated_tokens)?;
     let request_id = format!("chatcmpl-{}", Uuid::new_v4());
@@ -85,7 +113,7 @@ pub async fn handle_chat_completion(
                 role: "assistant".to_string(),
                 content: generated_text,
             },
-            finish_reason: "stop".to_string(),
+            finish_reason: finish_reason.to_string(),
         }],
         usage: Usage {
             prompt_tokens: prompt_token_count,
@@ -96,6 +124,8 @@ pub async fn handle_chat_completion(
     .into_response())
 }
 
+// TODO: Replace with proper chat template support (ChatML, Llama 3, etc.)
+// via a `chat_template` field in ServerConfig.
 /// Format chat messages into a single prompt string (MVP implementation).
 fn format_messages(messages: &[ChatMessage]) -> String {
     messages
