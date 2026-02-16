@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, Semaphore, SemaphorePermit};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -36,7 +36,7 @@ pub struct SessionGuard {
     session_id: Uuid,
     cancel: CancellationToken,
     manager: Arc<SessionManager>,
-    _permit: SemaphorePermit<'static>,
+    _permit: OwnedSemaphorePermit,
 }
 
 impl SessionGuard {
@@ -78,12 +78,10 @@ impl SessionManager {
     ///
     /// Returns a `SessionGuard` that automatically cleans up on drop.
     pub async fn acquire(self: &Arc<Self>, session_id: Uuid) -> SessionGuard {
-        // SAFETY: We leak the Arc<Semaphore> reference to get a 'static permit.
-        // The Semaphore lives as long as the SessionManager (Arc), which outlives all guards.
-        let permit = unsafe {
-            let semaphore: &'static Semaphore = &*Arc::as_ptr(&self.concurrency_limit);
-            semaphore.acquire().await.expect("semaphore not closed")
-        };
+        let permit = Arc::clone(&self.concurrency_limit)
+            .acquire_owned()
+            .await
+            .expect("semaphore not closed");
 
         let cancel = CancellationToken::new();
 
@@ -107,11 +105,9 @@ impl SessionManager {
 
     /// Try to acquire without blocking. Returns None if at capacity.
     pub async fn try_acquire(self: &Arc<Self>, session_id: Uuid) -> Option<SessionGuard> {
-        // Same static lifetime trick as acquire().
-        let permit = unsafe {
-            let semaphore: &'static Semaphore = &*Arc::as_ptr(&self.concurrency_limit);
-            semaphore.try_acquire().ok()?
-        };
+        let permit = Arc::clone(&self.concurrency_limit)
+            .try_acquire_owned()
+            .ok()?;
 
         let cancel = CancellationToken::new();
 

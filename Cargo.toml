@@ -11,6 +11,7 @@ members = [
     "crates/llama-rag",
     "crates/llama-cli",
     "crates/llama-server",
+    "crates/llama-rag",
 ]
 
 [workspace.package]
