@@ -1,0 +1,9 @@
+[package]
+name = "llama-sampling"
+description = "Sampling strategies for llama.rs — temperature, top-k/p, repetition penalty"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
