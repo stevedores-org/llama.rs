@@ -249,6 +249,10 @@ impl<E: LlamaEngine, S: DocumentStore> RagAdapter<E, S> {
         let mut output_tokens = Vec::with_capacity(self.config.max_tokens);
         for _ in 0..self.config.max_tokens {
             let result = self.engine.decode(&mut session)?;
+            // Stop on EOS token (typically token ID 2)
+            if result.token == 2 {
+                break;
+            }
             output_tokens.push(result.token);
         }
 
