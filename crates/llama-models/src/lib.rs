@@ -481,7 +481,7 @@ pub struct Attention {
 /// Transformer block combining attention and MLP with residual connections and normalization.
 ///
 /// Architecture:
-/// ```
+/// ```text
 /// x -> RMSNorm -> Attention + RoPE -> Add(x) -> RMSNorm -> SwiGLU -> Add(x)
 /// ```
 #[derive(Debug, Clone)]
