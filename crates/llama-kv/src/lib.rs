@@ -346,7 +346,12 @@ impl SessionKVCache {
         }
 
         for i in 0..self.layers.len() {
-            if let Err(e) = self.layers[i].write_prefill(k_seqs[i], v_seqs[i], prefill_len) {
+            let result = self.layer_mut(i).unwrap().write_prefill(
+                k_seqs[i],
+                v_seqs[i],
+                prefill_len,
+            );
+            if let Err(e) = result {
                 self.clear();
                 return Err(e);
             }
