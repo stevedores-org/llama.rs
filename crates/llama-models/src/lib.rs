@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use bytemuck::cast_slice;
+use bytemuck::{cast_slice_mut, try_cast_slice};
 use safetensors::{Dtype, SafeTensors};
 
 /// Errors for model operations and weight loading.
@@ -57,14 +57,18 @@ impl ModelWeights {
             }
 
             let shape = view.shape().to_vec();
-            let raw: &[f32] = cast_slice(view.data());
-            tensors.insert(
-                name.to_string(),
-                Tensor {
-                    shape,
-                    data: raw.to_vec(),
-                },
-            );
+            let data_bytes = view.data();
+            let data: Vec<f32> = match try_cast_slice(data_bytes) {
+                Ok(slice) => slice.to_vec(),
+                Err(_) => {
+                    let mut data = vec![0.0f32; data_bytes.len() / 4];
+                    let dest_slice: &mut [u8] = cast_slice_mut(&mut data);
+                    dest_slice.copy_from_slice(data_bytes);
+                    data
+                }
+            };
+
+            tensors.insert(name.to_string(), Tensor { shape, data });
         }
 
         Ok(Self { tensors })
@@ -187,7 +191,7 @@ pub fn attention_decode(
         let qh = &query[h * head_dim..(h + 1) * head_dim];
 
         let mut scores = vec![0.0f32; seq_len];
-        for (t, score) in scores.iter_mut().enumerate().take(seq_len) {
+        for (t, score) in scores.iter_mut().enumerate() {
             let kh_off = (t * n_heads + h) * head_dim;
             let kh = &keys[kh_off..kh_off + head_dim];
             let dot = qh.iter().zip(kh.iter()).map(|(&a, &b)| a * b).sum::<f32>();
@@ -259,7 +263,14 @@ impl LlamaBlock {
         d_ff: usize,
     ) -> Result<Vec<f32>, ModelError> {
         let x = rms_norm(input, norm_weight, 1e-5)?;
-        mlp_swiglu(&x, w_gate, w_up, w_down, d_model, d_ff)
+        let mlp_out = mlp_swiglu(&x, w_gate, w_up, w_down, d_model, d_ff)?;
+
+        // Residual connection: x = input + mlp(norm(input))
+        Ok(input
+            .iter()
+            .zip(mlp_out.iter())
+            .map(|(&a, &b)| a + b)
+            .collect())
     }
 }
 
@@ -297,7 +308,14 @@ fn silu(x: f32) -> f32 {
 }
 
 fn softmax(x: &[f32]) -> Vec<f32> {
+    if x.is_empty() {
+        return Vec::new();
+    }
     let max = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if max == f32::NEG_INFINITY {
+        // All values are -inf, return uniform distribution
+        return vec![1.0 / x.len() as f32; x.len()];
+    }
     let mut exps: Vec<f32> = x.iter().map(|v| (v - max).exp()).collect();
     let sum: f32 = exps.iter().sum();
     if sum > 0.0 {
@@ -311,6 +329,7 @@ fn softmax(x: &[f32]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytemuck::cast_slice;
     use safetensors::tensor::{serialize, TensorView};
     use std::collections::BTreeMap;
 

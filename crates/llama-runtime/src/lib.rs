@@ -541,7 +541,13 @@ fn project_logits(ctx: &[f32; 2], out_proj: &[[f32; 8]; 2]) -> Vec<f32> {
 }
 
 fn softmax(scores: &[f32]) -> Vec<f32> {
+    if scores.is_empty() {
+        return Vec::new();
+    }
     let max_v = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if max_v == f32::NEG_INFINITY {
+        return vec![1.0 / scores.len() as f32; scores.len()];
+    }
     let mut exps: Vec<f32> = scores.iter().map(|s| (s - max_v).exp()).collect();
     let sum: f32 = exps.iter().sum();
     if sum > 0.0 {
