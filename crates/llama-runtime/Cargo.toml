@@ -1,9 +1,14 @@
 [package]
 name = "llama-runtime"
-description = "Execution runtime for llama.rs — oxidizedMLX integration and backend selection"
+description = "Runtime backend selection and execution for llama.rs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
+llama-engine = { path = "../llama-engine" }
+llama-tokenizer = { path = "../llama-tokenizer" }
+llama-sampling = { path = "../llama-sampling" }
+llama-kv = { path = "../llama-kv" }
+thiserror.workspace = true

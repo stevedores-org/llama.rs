@@ -1,6 +1,6 @@
 [package]
-name = "llama-tokenizer"
-description = "Tokenizer crate for llama.rs — deterministic text-to-token conversion"
+name = "llama-cli"
+description = "CLI runner for llama.rs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,3 +8,6 @@ repository.workspace = true
 
 [dependencies]
 llama-engine = { path = "../llama-engine" }
+llama-runtime = { path = "../llama-runtime" }
+clap.workspace = true
+thiserror.workspace = true
