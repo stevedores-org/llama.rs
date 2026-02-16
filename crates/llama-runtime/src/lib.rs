@@ -545,8 +545,18 @@ fn softmax(scores: &[f32]) -> Vec<f32> {
         return Vec::new();
     }
     let max_v = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    if max_v == f32::NEG_INFINITY {
+    if max_v.is_nan() || max_v == f32::NEG_INFINITY {
         return vec![1.0 / scores.len() as f32; scores.len()];
+    }
+    if max_v == f32::INFINITY {
+        let mut out = vec![0.0; scores.len()];
+        let count = scores.iter().filter(|&&v| v == f32::INFINITY).count();
+        for (i, &v) in scores.iter().enumerate() {
+            if v == f32::INFINITY {
+                out[i] = 1.0 / count as f32;
+            }
+        }
+        return out;
     }
     let mut exps: Vec<f32> = scores.iter().map(|s| (s - max_v).exp()).collect();
     let sum: f32 = exps.iter().sum();

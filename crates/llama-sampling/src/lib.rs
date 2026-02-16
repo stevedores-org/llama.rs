@@ -190,9 +190,21 @@ fn softmax_with_temperature(logits: &[f32], temperature: f32) -> Result<Vec<f32>
     let scaled: Vec<f32> = logits.iter().map(|&x| x / temperature).collect();
     let max_val = scaled.iter().copied().fold(f32::NEG_INFINITY, f32::max);
 
-    if max_val == f32::NEG_INFINITY {
-        // All logits are -inf, return uniform distribution
+    if max_val.is_nan() || max_val == f32::NEG_INFINITY {
+        // All logits are -inf or NaN, return uniform distribution
         return Ok(vec![1.0 / logits.len() as f32; logits.len()]);
+    }
+
+    if max_val == f32::INFINITY {
+        // Handle +inf by splitting probability among all +inf values
+        let mut out = vec![0.0; logits.len()];
+        let count = scaled.iter().filter(|&&v| v == f32::INFINITY).count();
+        for (i, &v) in scaled.iter().enumerate() {
+            if v == f32::INFINITY {
+                out[i] = 1.0 / count as f32;
+            }
+        }
+        return Ok(out);
     }
 
     let mut exps: Vec<f32> = scaled.iter().map(|&x| (x - max_val).exp()).collect();
