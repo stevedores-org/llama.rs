@@ -375,6 +375,69 @@ mod tests {
     }
 
     #[test]
+    fn mlp_swiglu_matches_reference() {
+        // Reference: x=[1.0, 2.0], d_model=2, d_ff=2
+        // w_gate=[0.5, 0, 0, 0.5] (row-major) => gate_pre = [0.5, 1.0]
+        // w_up=[1, 0, 0, 1] => up = [1.0, 2.0]
+        // silu(0.5) = 0.5/(1+exp(-0.5)) ≈ 0.31123
+        // silu(1.0) = 1.0/(1+exp(-1.0)) ≈ 0.73106
+        // hidden = [0.31123*1.0, 0.73106*2.0] = [0.31123, 1.46212]
+        // w_down=[1, 0, 0, 1] => out = [0.31123, 1.46212]
+        let x = [1.0f32, 2.0];
+        let w_gate = [0.5, 0.0, 0.0, 0.5];
+        let w_up = [1.0, 0.0, 0.0, 1.0];
+        let w_down = [1.0, 0.0, 0.0, 1.0];
+        let out = mlp_swiglu(&x, &w_gate, &w_up, &w_down, 2, 2).unwrap();
+
+        let silu_05 = 0.5 / (1.0 + (-0.5f32).exp());
+        let silu_10 = 1.0 / (1.0 + (-1.0f32).exp());
+        let expected = [silu_05 * 1.0, silu_10 * 2.0];
+        assert_close(&out, &expected, 1e-6);
+    }
+
+    #[test]
+    fn rms_norm_scale_invariance() {
+        // RMSNorm is scale-invariant: norm(α·x) == norm(x) when weight=1
+        let w = [1.0, 1.0, 1.0, 1.0];
+        let x1 = [1.0, 2.0, 3.0, 4.0];
+        let x2 = [2.0, 4.0, 6.0, 8.0]; // 2× scaled
+        let y1 = rms_norm(&x1, &w, 1e-5).unwrap();
+        let y2 = rms_norm(&x2, &w, 1e-5).unwrap();
+        assert_close(&y1, &y2, 1e-5);
+    }
+
+    #[test]
+    fn rope_preserves_magnitude() {
+        // RoPE is a rotation, so |q_rot| == |q|
+        let mut q = [1.0, 0.5, -0.3, 0.8];
+        let mut k = [0.2, -0.1, 0.7, 0.4];
+        let q_orig = q;
+        let k_orig = k;
+        apply_rope(&mut q, &mut k, 5, 1, 4, 10_000.0).unwrap();
+
+        let mag_before: f32 = q_orig.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let mag_after: f32 = q.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(
+            (mag_before - mag_after).abs() < 1e-5,
+            "RoPE should preserve magnitude"
+        );
+
+        let k_mag_before: f32 = k_orig.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let k_mag_after: f32 = k.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((k_mag_before - k_mag_after).abs() < 1e-5);
+    }
+
+    #[test]
+    fn attention_single_token_is_identity_like() {
+        // With seq_len=1, attention output = values (softmax of single score = 1.0)
+        let query = [1.0, 0.0];
+        let keys = [1.0, 0.0]; // seq=1, heads=1, dim=2
+        let values = [3.0, 7.0];
+        let out = attention_decode(&query, &keys, &values, 1, 1, 2).unwrap();
+        assert_close(&out, &values, 1e-5);
+    }
+
+    #[test]
     fn loads_weights_from_safetensors() {
         let tensor = [1.0f32, 2.0, 3.0, 4.0];
         let view = TensorView::new(Dtype::F32, vec![2, 2], cast_slice(&tensor)).unwrap();

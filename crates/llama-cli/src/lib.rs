@@ -7,7 +7,7 @@
 
 use llama_kv::{KVError, KVLayout, LayerKVCache};
 use llama_models::{apply_rope, attention_decode, mlp_swiglu, rms_norm, ModelError};
-use llama_sampling::{Sampler, SamplingError};
+use llama_sampling::{Sampler, SamplingConfig, SamplingError, SamplingStrategy};
 use llama_tokenizer::{Tokenizer, TokenizerError, WhitespaceTokenizer};
 
 /// Errors from the generation pipeline.
@@ -317,7 +317,12 @@ pub fn generate(
     );
 
     // 3. Create sampler
-    let mut sampler = Sampler::new().with_temperature(temperature).with_seed(seed);
+    let mut sampler = Sampler::new(SamplingConfig {
+        strategy: SamplingStrategy::Stochastic,
+        temperature,
+        seed,
+        ..SamplingConfig::default()
+    })?;
 
     // 4. Prefill: process prompt tokens
     let mut logits = model.forward_prefill(&prompt_ids, &mut kv_cache)?;
@@ -327,7 +332,7 @@ pub fn generate(
     let mut new_text = String::new();
 
     for _ in 0..max_tokens {
-        let next_token = sampler.sample(&logits)?;
+        let next_token = sampler.sample(&logits, &[])? as usize;
         generated_ids.push(next_token);
 
         // Register the token in the tokenizer's vocab for decoding

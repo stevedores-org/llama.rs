@@ -6,34 +6,38 @@
 
 | Milestone | Status | Notes |
 |-----------|--------|-------|
-| A — "Hello Inference" | In Progress | Scaffold done, tokenizer done, remaining items open |
-| B — KV Cache Correctness | Not started | PR #18 merged |
+| A — "Hello Inference" | In Progress | Foundation complete, CLI demo remaining |
+| B — KV Cache Correctness | Not started | KV cache infra landed (PR #18); correctness validation not started |
 | C — Real Weight Loading | Not started | |
 | D — Metal Enablement | Not started | |
 | E — RAG + Agents | Not started | |
 
 See **`docs/PROGRESS_REPORT.md`** for full checklist with PR numbers and Issue #2 epic status.
 
-### Next: Tiny model forward pass — not started
+### Next: CLI `llama-cli generate`
 
-Implement a single-block forward pass on the CPU backend so that a tiny model can produce logits for a fixed prompt. This unblocks golden tests (logits vs. Python reference) and `llama-cli generate`.
+Wire tokenizer → model → sampler → detokenizer into a CLI command. Model blocks (PR #37 merged) and KV equivalence verifier (PR #40 merged) provide the building blocks.
 
 ## Checklist
 
 - [x] `llama-engine` trait + session struct — PR #16 (merged), #19 (open)
 - [x] Workspace scaffolding — PR #16 (merged)
 - [x] Tokenizer trait + reference impl — PR #17, #22 (merged)
-- [x] Sampling crate — PR #21 (open)
-- [x] KV cache — PR #18 (merged)
-- [ ] **Tiny model forward pass** — single block on CPU backend *(next)*
-- [ ] CLI `llama-cli generate` — not started
+- [x] Sampling crate — PR #29 (merged)
+- [x] KV cache — PR #18 (merged), PR #46 (atomic session ops, open)
+- [x] Model blocks (LLAMA-005) — PR #37 (merged)
+- [x] KV equivalence verifier (LLAMA-006) — PR #40 (merged)
+- [x] Phase 1 golden tests — PR #47 (open)
+- [ ] **CLI `llama-cli generate`** — not started
 
 ## Tests
 
-- **Unit:** tokenizer roundtrip
-- **Golden:** tiny forward pass matches Python reference
-- **Golden:** logits for a fixed prompt match reference (within tolerance)
-- **Sampling determinism:** fixed logits + seed → fixed sequence
+- **Unit:** tokenizer roundtrip (ASCII, unicode, emoji, CJK)
+- **Model blocks:** RMSNorm, RoPE, attention, MLP reference golden tests
+- **KV equivalence (LLAMA-006):** full forward vs prefill+decode ≤ 1e-5 diff
+- **KV off-by-one detection:** injected bug produces > 1e-4 diff
+- **Sampling:** determinism, greedy, top-k/p, edge cases
+- **Golden (pending):** end-to-end tiny model forward pass vs Python reference
 
 ## Key Design Decisions
 
