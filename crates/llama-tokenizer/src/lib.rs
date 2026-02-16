@@ -755,8 +755,7 @@ mod tests {
           }
         }"#;
         let tok = LoadedTokenizer::from_tokenizer_json_str(json).unwrap();
-        // 'A' is 0x41. It should match "<0x41>" if we handle byte pieces.
-        // Currently it fails because "A" != "<0x41>".
+        // 'A' is 0x41. With byte-fallback, it encodes via the "<0x41>" byte piece.
         let encoded = tok.encode("A").unwrap();
         assert_eq!(encoded, vec![1]);
     }

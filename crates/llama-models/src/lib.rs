@@ -311,9 +311,11 @@ fn softmax(x: &[f32]) -> Vec<f32> {
     if x.is_empty() {
         return Vec::new();
     }
+    if x.iter().any(|v| v.is_nan()) {
+        return vec![1.0 / x.len() as f32; x.len()];
+    }
     let max = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    if max.is_nan() || max == f32::NEG_INFINITY {
-        // All values are -inf or NaN, return uniform distribution
+    if max == f32::NEG_INFINITY {
         return vec![1.0 / x.len() as f32; x.len()];
     }
     if max == f32::INFINITY {
@@ -465,6 +467,41 @@ mod tests {
         let values = [3.0, 7.0];
         let out = attention_decode(&query, &keys, &values, 1, 1, 2).unwrap();
         assert_close(&out, &values, 1e-5);
+    }
+
+    #[test]
+    fn softmax_handles_all_neg_inf() {
+        let probs = softmax(&[f32::NEG_INFINITY, f32::NEG_INFINITY]);
+        assert_eq!(probs, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn softmax_handles_all_nan() {
+        let probs = softmax(&[f32::NAN, f32::NAN]);
+        assert_eq!(probs, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn softmax_handles_mixed_nan_and_finite() {
+        let probs = softmax(&[f32::NAN, 1.0, 2.0]);
+        let expected = 1.0 / 3.0;
+        for p in &probs {
+            assert!((p - expected).abs() < 1e-7);
+        }
+    }
+
+    #[test]
+    fn softmax_handles_all_pos_inf() {
+        let probs = softmax(&[f32::INFINITY, f32::INFINITY]);
+        assert_eq!(probs, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn softmax_handles_mixed_pos_inf_and_finite() {
+        let probs = softmax(&[f32::INFINITY, 1.0, f32::INFINITY]);
+        assert_eq!(probs[0], 0.5);
+        assert_eq!(probs[1], 0.0);
+        assert_eq!(probs[2], 0.5);
     }
 
     #[test]
