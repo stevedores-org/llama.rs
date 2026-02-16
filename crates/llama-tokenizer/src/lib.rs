@@ -225,7 +225,10 @@ mod tests {
     fn decode_invalid_token_errors() {
         let tok = WhitespaceTokenizer::new();
         tok.encode("hello").unwrap();
-        assert_eq!(tok.decode(&[999]).unwrap_err(), TokenizerError::InvalidToken(999));
+        assert_eq!(
+            tok.decode(&[999]).unwrap_err(),
+            TokenizerError::InvalidToken(999)
+        );
     }
 
     #[test]
