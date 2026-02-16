@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use bytemuck::cast_slice;
+use bytemuck::{cast_slice_mut, try_cast_slice};
 use safetensors::{Dtype, SafeTensors};
 
 /// Errors for model operations and weight loading.
@@ -57,13 +57,20 @@ impl ModelWeights {
             }
 
             let shape = view.shape().to_vec();
-            let raw: &[f32] = cast_slice(view.data());
+            let data_bytes = view.data();
+            let data: Vec<f32> = match try_cast_slice(data_bytes) {
+                Ok(slice) => slice.to_vec(),
+                Err(_) => {
+                    let mut data = vec![0.0f32; data_bytes.len() / 4];
+                    let dest_slice: &mut [u8] = cast_slice_mut(&mut data);
+                    dest_slice.copy_from_slice(data_bytes);
+                    data
+                }
+            };
+
             tensors.insert(
                 name.to_string(),
-                Tensor {
-                    shape,
-                    data: raw.to_vec(),
-                },
+                Tensor { shape, data },
             );
         }
 
@@ -311,6 +318,7 @@ fn softmax(x: &[f32]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytemuck::cast_slice;
     use safetensors::tensor::{serialize, TensorView};
     use std::collections::BTreeMap;
 
