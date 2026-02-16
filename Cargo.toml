@@ -8,6 +8,7 @@ members = [
     "crates/llama-sampling",
     "crates/llama-kv",
     "crates/llama-agents",
+    "crates/llama-rag",
     "crates/llama-cli",
     "crates/llama-server",
 ]
