@@ -7,7 +7,11 @@ members = [
     "crates/llama-runtime",
     "crates/llama-sampling",
     "crates/llama-kv",
+<<<<<<< codex/featM
     "crates/llama-agents",
+=======
+    "crates/llama-cli",
+>>>>>>> develop
 ]
 
 [workspace.package]
@@ -19,3 +23,4 @@ repository = "https://github.com/stevedores-org/llama.rs"
 [workspace.dependencies]
 thiserror = "2"
 uuid = { version = "1.6", features = ["v4"] }
+serde_json = "1"

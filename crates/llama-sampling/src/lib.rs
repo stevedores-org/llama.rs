@@ -124,6 +124,10 @@ impl Sampler {
 }
 
 /// Greedy decoding (argmax).
+///
+/// Callers must ensure logits contain only finite values.
+/// NaN values will not compare greater than any value, so NaN-containing
+/// slices may return an arbitrary index.
 pub fn greedy_sample(logits: &[f32]) -> Result<i32, SamplingError> {
     if logits.is_empty() {
         return Err(SamplingError::EmptyLogits);
