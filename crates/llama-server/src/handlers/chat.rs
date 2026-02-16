@@ -39,10 +39,14 @@ pub async fn handle_chat_completion(
         // Guard is moved into the stream — it stays alive until the stream is dropped.
         // When the client disconnects, axum drops the stream, dropping the guard,
         // which cancels the token and frees the session slot.
-        return Ok(
-            streaming::stream_chat_completion(state, prompt_tokens, max_tokens, cancel, guard)
-                .into_response(),
-        );
+        return Ok(streaming::stream_chat_completion(
+            state,
+            prompt_tokens,
+            max_tokens,
+            cancel,
+            guard,
+        )
+        .into_response());
     }
 
     // Non-streaming response — guard lives for the duration of this function

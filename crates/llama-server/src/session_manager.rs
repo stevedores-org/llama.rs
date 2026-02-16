@@ -81,8 +81,7 @@ impl SessionManager {
         // SAFETY: We leak the Arc<Semaphore> reference to get a 'static permit.
         // The Semaphore lives as long as the SessionManager (Arc), which outlives all guards.
         let permit = unsafe {
-            let semaphore: &'static Semaphore =
-                &*(Arc::as_ptr(&self.concurrency_limit) as *const Semaphore);
+            let semaphore: &'static Semaphore = &*Arc::as_ptr(&self.concurrency_limit);
             semaphore.acquire().await.expect("semaphore not closed")
         };
 
@@ -110,8 +109,7 @@ impl SessionManager {
     pub async fn try_acquire(self: &Arc<Self>, session_id: Uuid) -> Option<SessionGuard> {
         // Same static lifetime trick as acquire().
         let permit = unsafe {
-            let semaphore: &'static Semaphore =
-                &*(Arc::as_ptr(&self.concurrency_limit) as *const Semaphore);
+            let semaphore: &'static Semaphore = &*Arc::as_ptr(&self.concurrency_limit);
             semaphore.try_acquire().ok()?
         };
 
