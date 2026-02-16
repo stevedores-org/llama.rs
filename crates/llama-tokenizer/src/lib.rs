@@ -419,11 +419,11 @@ impl Tokenizer for LoadedTokenizer {
                     TokenizerError::EncodingError("unexpected end of string".to_string())
                 })?;
                 let ch_len = ch.len_utf8();
-                let ch_bytes = &text[i..i + ch_len].as_bytes();
+                let ch_bytes = &text.as_bytes()[i..i + ch_len];
 
                 let mut all_bytes_matched = true;
                 let mut byte_ids = Vec::with_capacity(ch_len);
-                for &b in *ch_bytes {
+                for &b in ch_bytes {
                     if let Some(id) = self.byte_pieces[b as usize] {
                         byte_ids.push(id);
                     } else {
