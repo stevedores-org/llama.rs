@@ -98,10 +98,18 @@ impl RagPromptBuilder {
                 index: idx,
                 source_id: ctx.source_id.clone(),
                 score: ctx.score,
-                snippet: if ctx.content.len() > 100 {
-                    format!("{}...", &ctx.content[..100])
-                } else {
-                    ctx.content.clone()
+                snippet: {
+                    let content = &ctx.content;
+                    if content.len() > 100 {
+                        // Safe UTF-8 slicing: find char boundary
+                        let mut boundary = 100.min(content.len());
+                        while !content.is_char_boundary(boundary) && boundary > 0 {
+                            boundary -= 1;
+                        }
+                        format!("{}...", &content[..boundary])
+                    } else {
+                        content.clone()
+                    }
                 },
             });
         }

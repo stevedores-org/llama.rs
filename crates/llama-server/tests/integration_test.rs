@@ -175,7 +175,7 @@ async fn embeddings_single_input() {
     assert_eq!(json["object"], "list");
     assert_eq!(json["data"].as_array().unwrap().len(), 1);
     assert_eq!(json["data"][0]["object"], "embedding");
-    assert!(json["data"][0]["embedding"].as_array().unwrap().len() > 0);
+    assert!(!json["data"][0]["embedding"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
