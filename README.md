@@ -44,6 +44,11 @@ just test       # run tests
 just check      # type-check
 ```
 
+## Contributing
+
+- Start here: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Agent/operator instructions: [`CODEX.md`](CODEX.md)
+
 ## License
 
 MIT
