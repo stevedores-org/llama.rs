@@ -330,6 +330,20 @@ impl WhitespaceTokenizer {
     }
 }
 
+impl VocabState {
+    fn get_or_insert(&mut self, piece: &str) -> i32 {
+        if let Some(&id) = self.reverse_vocab.get(piece) {
+            id
+        } else {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.reverse_vocab.insert(piece.to_string(), id);
+            self.vocab.insert(id, piece.to_string());
+            id
+        }
+    }
+}
+
 impl Default for WhitespaceTokenizer {
     fn default() -> Self {
         Self::new()
@@ -344,17 +358,28 @@ impl Tokenizer for WhitespaceTokenizer {
             .map_err(|_| TokenizerError::EncodingError("tokenizer lock poisoned".to_string()))?;
 
         let mut ids = Vec::new();
-        for word in text.split_whitespace() {
-            let id = if let Some(id) = state.reverse_vocab.get(word) {
-                *id
-            } else {
-                let id = state.next_id;
-                state.next_id += 1;
-                state.reverse_vocab.insert(word.to_string(), id);
-                state.vocab.insert(id, word.to_string());
-                id
-            };
+        if text.is_empty() {
+            return Ok(ids);
+        }
+
+        let mut current_token = String::new();
+        let mut chars = text.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            current_token.push(c);
+            let is_ws = c.is_whitespace();
+
+            while let Some(&next_c) = chars.peek() {
+                if next_c.is_whitespace() == is_ws {
+                    current_token.push(chars.next().unwrap());
+                } else {
+                    break;
+                }
+            }
+
+            let id = state.get_or_insert(&current_token);
             ids.push(id);
+            current_token.clear();
         }
 
         Ok(ids)
@@ -371,8 +396,7 @@ impl Tokenizer for WhitespaceTokenizer {
 
     fn decode_token(&self, token: i32, state: &mut DecodingState) -> TokenizerResult<String> {
         let piece = self.decode_id(token)?;
-        let prepend_space = state.emitted_any && parse_byte_piece(&piece).is_none();
-        let emitted = state.append_bytes(&piece_to_bytes(&piece, prepend_space))?;
+        let emitted = state.append_bytes(piece.as_bytes())?;
         state.emitted_any = true;
         Ok(emitted)
     }
@@ -506,7 +530,8 @@ mod tests {
     fn encode_whitespace_simple() {
         let tok = WhitespaceTokenizer::new();
         let ids = tok.encode("hello world").unwrap();
-        assert_eq!(ids.len(), 2);
+        // word, space, word
+        assert_eq!(ids.len(), 3);
     }
 
     #[test]
@@ -527,7 +552,8 @@ mod tests {
     fn encode_multiple_spaces() {
         let tok = WhitespaceTokenizer::new();
         let ids = tok.encode("hello    world").unwrap();
-        assert_eq!(ids.len(), 2);
+        // word, spaces, word
+        assert_eq!(ids.len(), 3);
     }
 
     #[test]
@@ -555,7 +581,9 @@ mod tests {
         assert_eq!(state.buffer(), "");
         assert_eq!(tok.decode_token(encoded[0], &mut state).unwrap(), "hello");
         assert_eq!(state.buffer(), "hello");
-        assert_eq!(tok.decode_token(encoded[1], &mut state).unwrap(), " world");
+        assert_eq!(tok.decode_token(encoded[1], &mut state).unwrap(), " ");
+        assert_eq!(state.buffer(), "hello ");
+        assert_eq!(tok.decode_token(encoded[2], &mut state).unwrap(), "world");
         assert_eq!(state.buffer(), "hello world");
 
         state.clear();
@@ -587,7 +615,7 @@ mod tests {
         let tok = WhitespaceTokenizer::new();
         let original = "hello 🦀 world 🚀";
         let encoded = tok.encode(original).unwrap();
-        assert_eq!(encoded.len(), 4);
+        assert_eq!(encoded.len(), 7);
         let decoded = tok.decode(&encoded).unwrap();
         assert_eq!(decoded, original);
     }
@@ -598,7 +626,7 @@ mod tests {
         // CJK characters as whitespace-delimited tokens
         let original = "你好 世界";
         let encoded = tok.encode(original).unwrap();
-        assert_eq!(encoded.len(), 2);
+        assert_eq!(encoded.len(), 3);
         let decoded = tok.decode(&encoded).unwrap();
         assert_eq!(decoded, original);
     }
@@ -606,9 +634,9 @@ mod tests {
     #[test]
     fn encode_tabs_and_newlines_treated_as_whitespace() {
         let tok = WhitespaceTokenizer::new();
-        // split_whitespace treats tabs and newlines as delimiters
+        // word, tab, word, newline, word
         let ids = tok.encode("hello\tworld\ntest").unwrap();
-        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.len(), 5);
     }
 
     #[test]
@@ -641,7 +669,8 @@ mod tests {
         let tok = WhitespaceTokenizer::new();
         assert_eq!(tok.vocab_size(), 0);
         tok.encode("hello world hello").unwrap();
-        assert_eq!(tok.vocab_size(), 2);
+        // "hello", " ", "world"
+        assert_eq!(tok.vocab_size(), 3);
     }
 
     #[test]

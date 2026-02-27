@@ -16,12 +16,10 @@ mod tests {
             ("hello", "hello"),
             ("hello world", "hello world"),
             ("a", "a"),
-            // Pure whitespace tokens are dropped by split_whitespace()
-            // so " " encodes to empty and decodes to ""
-            (" ", ""),
-            ("  ", ""),
-            ("\t", ""),
-            ("\n", ""),
+            (" ", " "),
+            ("  ", "  "),
+            ("\t", "\t"),
+            ("\n", "\n"),
         ];
 
         for (input, expected) in test_cases {
@@ -35,14 +33,13 @@ mod tests {
     fn roundtrip_whitespace_torture() {
         let tok = WhitespaceTokenizer::new();
         let test_cases = vec![
-            // split_whitespace() drops leading/trailing whitespace
-            (" a", "a"),                // leading space stripped
-            ("a ", "a"),                // trailing space stripped
-            ("a  b", "a b"),            // double space collapses to single in join
-            ("  leading", "leading"),   // multiple leading stripped
-            ("trailing  ", "trailing"), // multiple trailing stripped
-            (" \n", ""),                // space + newline = pure whitespace
-            ("\t\t", ""),               // tabs = pure whitespace
+            (" a", " a"),
+            ("a ", "a "),
+            ("a  b", "a  b"),
+            ("  leading", "  leading"),
+            ("trailing  ", "trailing  "),
+            (" \n", " \n"),
+            ("\t\t", "\t\t"),
         ];
 
         for (input, expected) in test_cases {
@@ -72,9 +69,14 @@ mod tests {
         let decoded = tok.decode(&[first_id]).expect("decode failed");
         assert_eq!(decoded, "alpha");
 
-        // Decode just the second token
-        let second_id = multi[1];
-        let decoded2 = tok.decode(&[second_id]).expect("decode failed");
+        // Decode just the second token (the space)
+        let space_id = multi[1];
+        let decoded_space = tok.decode(&[space_id]).expect("decode failed");
+        assert_eq!(decoded_space, " ");
+
+        // Decode the third token
+        let third_id = multi[2];
+        let decoded2 = tok.decode(&[third_id]).expect("decode failed");
         assert_eq!(decoded2, "beta");
     }
 
@@ -170,14 +172,17 @@ mod tests {
         assert_eq!(tok.vocab_size(), 1);
 
         tok.encode("one two").expect("encode failed");
-        assert_eq!(tok.vocab_size(), 2);
+        // "one", " ", "two"
+        assert_eq!(tok.vocab_size(), 3);
 
         tok.encode("one two three").expect("encode failed");
-        assert_eq!(tok.vocab_size(), 3);
+        // "one", " ", "two", " ", "three"
+        // Unique pieces: "one", " ", "two", "three"
+        assert_eq!(tok.vocab_size(), 4);
 
         // Encoding existing word doesn't increase vocab
         tok.encode("one").expect("encode failed");
-        assert_eq!(tok.vocab_size(), 3);
+        assert_eq!(tok.vocab_size(), 4);
     }
 
     // ===== Section D: Error cases =====
