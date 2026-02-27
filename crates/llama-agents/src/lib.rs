@@ -7,6 +7,8 @@
 //! - Actor-style state persistence for multi-session chat orchestration
 //! - Multi-turn history + persisted `llama-kv` state per session
 
+pub mod orchestration;
+
 use llama_engine::{LlamaEngine, Session};
 use llama_kv::{KVLayout, SessionKVCache};
 use std::collections::HashMap;
