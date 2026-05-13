@@ -8,6 +8,12 @@
 //! - Memory-friendly layouts for Metal/CPU
 //! - Sliding-window eviction via `KvPager` trait
 
+use std::io::{Read, Write};
+use std::path::Path;
+
+const SNAPSHOT_MAGIC: &[u8; 8] = b"LLRSKV\0\0";
+const SNAPSHOT_VERSION: u32 = 1;
+
 /// Represents a shape: `[seq_len, heads, head_dim]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KVShape {
@@ -58,6 +64,27 @@ pub enum KVLayout {
     /// Transposed for attention: `[heads][head_dim][seq_len]`
     /// Optimizes attention Q·K^T computation.
     Transposed,
+}
+
+impl KVLayout {
+    fn to_u8(self) -> u8 {
+        match self {
+            KVLayout::BySequence => 0,
+            KVLayout::ByHead => 1,
+            KVLayout::Transposed => 2,
+        }
+    }
+
+    fn from_u8(value: u8) -> Result<Self, KVError> {
+        match value {
+            0 => Ok(KVLayout::BySequence),
+            1 => Ok(KVLayout::ByHead),
+            2 => Ok(KVLayout::Transposed),
+            _ => Err(KVError::InvalidSnapshot(format!(
+                "unknown KV layout tag {value}"
+            ))),
+        }
+    }
 }
 
 /// Paging/eviction interface for sliding-window KV behavior.
@@ -288,6 +315,10 @@ pub enum KVError {
     NotEmpty,
     #[error("eviction out of range: requested {requested}, available {available}")]
     EvictionOutOfRange { requested: usize, available: usize },
+    #[error("snapshot I/O error: {0}")]
+    SnapshotIo(String),
+    #[error("invalid KV snapshot: {0}")]
+    InvalidSnapshot(String),
 }
 
 impl KvPager for LayerKVCache {
@@ -451,6 +482,203 @@ impl SessionKVCache {
     pub fn memory_used_bytes(&self) -> usize {
         self.layers.iter().map(|l| l.memory_used_bytes()).sum()
     }
+
+    /// Write the currently used KV entries to a durable binary snapshot.
+    ///
+    /// The snapshot stores metadata plus K/V values in canonical token order,
+    /// not raw backing-vector order. That keeps snapshots stable across layout
+    /// policies while preserving the original layout on restore.
+    pub fn write_snapshot<W: Write>(&self, mut writer: W) -> Result<(), KVError> {
+        self.validate_synchronized_layers()?;
+
+        let first = self
+            .layers
+            .first()
+            .ok_or_else(|| KVError::InvalidSnapshot("session has no layers".to_string()))?;
+
+        writer
+            .write_all(SNAPSHOT_MAGIC)
+            .map_err(|e| KVError::SnapshotIo(e.to_string()))?;
+        write_u32(&mut writer, SNAPSHOT_VERSION)?;
+        write_u64(&mut writer, self.layers.len())?;
+        write_u64(&mut writer, first.max_seq_len)?;
+        write_u64(&mut writer, first.seq_len)?;
+        write_u64(&mut writer, first.n_heads)?;
+        write_u64(&mut writer, first.head_dim)?;
+        writer
+            .write_all(&[first.layout.to_u8()])
+            .map_err(|e| KVError::SnapshotIo(e.to_string()))?;
+
+        let token_width = first.n_heads * first.head_dim;
+        let mut k_token = vec![0.0f32; token_width];
+        let mut v_token = vec![0.0f32; token_width];
+
+        for layer in &self.layers {
+            for seq in 0..first.seq_len {
+                layer.read_token_at_position(seq, &mut k_token, &mut v_token);
+                write_f32_slice(&mut writer, &k_token)?;
+                write_f32_slice(&mut writer, &v_token)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Restore a session-level KV cache from a snapshot produced by
+    /// [`Self::write_snapshot`].
+    pub fn read_snapshot<R: Read>(mut reader: R) -> Result<Self, KVError> {
+        let mut magic = [0u8; SNAPSHOT_MAGIC.len()];
+        reader
+            .read_exact(&mut magic)
+            .map_err(|e| KVError::SnapshotIo(e.to_string()))?;
+        if &magic != SNAPSHOT_MAGIC {
+            return Err(KVError::InvalidSnapshot("bad magic header".to_string()));
+        }
+
+        let version = read_u32(&mut reader)?;
+        if version != SNAPSHOT_VERSION {
+            return Err(KVError::InvalidSnapshot(format!(
+                "unsupported snapshot version {version}"
+            )));
+        }
+
+        let n_layers = read_usize(&mut reader, "n_layers")?;
+        let max_seq_len = read_usize(&mut reader, "max_seq_len")?;
+        let seq_len = read_usize(&mut reader, "seq_len")?;
+        let n_heads = read_usize(&mut reader, "n_heads")?;
+        let head_dim = read_usize(&mut reader, "head_dim")?;
+
+        let mut layout = [0u8; 1];
+        reader
+            .read_exact(&mut layout)
+            .map_err(|e| KVError::SnapshotIo(e.to_string()))?;
+        let layout = KVLayout::from_u8(layout[0])?;
+
+        if n_layers == 0 {
+            return Err(KVError::InvalidSnapshot(
+                "n_layers must be greater than zero".to_string(),
+            ));
+        }
+        if seq_len > max_seq_len {
+            return Err(KVError::InvalidSnapshot(format!(
+                "seq_len {seq_len} exceeds max_seq_len {max_seq_len}"
+            )));
+        }
+
+        let mut session = SessionKVCache::new(n_layers, max_seq_len, n_heads, head_dim, layout);
+        let token_width = n_heads * head_dim;
+        let mut k_seq = vec![0.0f32; seq_len * token_width];
+        let mut v_seq = vec![0.0f32; seq_len * token_width];
+
+        for layer_idx in 0..n_layers {
+            for seq in 0..seq_len {
+                let start = seq * token_width;
+                let end = start + token_width;
+                read_f32_slice(&mut reader, &mut k_seq[start..end])?;
+                read_f32_slice(&mut reader, &mut v_seq[start..end])?;
+            }
+            session
+                .layer_mut(layer_idx)
+                .expect("newly created session should contain requested layers")
+                .write_prefill(&k_seq, &v_seq, seq_len)?;
+        }
+
+        let mut trailing = [0u8; 1];
+        match reader.read(&mut trailing) {
+            Ok(0) => Ok(session),
+            Ok(_) => Err(KVError::InvalidSnapshot(
+                "snapshot has trailing bytes".to_string(),
+            )),
+            Err(e) => Err(KVError::SnapshotIo(e.to_string())),
+        }
+    }
+
+    /// Persist the current KV cache to `path`.
+    pub fn save_snapshot<P: AsRef<Path>>(&self, path: P) -> Result<(), KVError> {
+        let file = std::fs::File::create(path).map_err(|e| KVError::SnapshotIo(e.to_string()))?;
+        self.write_snapshot(file)
+    }
+
+    /// Load a KV cache snapshot from `path`.
+    pub fn load_snapshot<P: AsRef<Path>>(path: P) -> Result<Self, KVError> {
+        let file = std::fs::File::open(path).map_err(|e| KVError::SnapshotIo(e.to_string()))?;
+        Self::read_snapshot(file)
+    }
+
+    fn validate_synchronized_layers(&self) -> Result<(), KVError> {
+        let first = self
+            .layers
+            .first()
+            .ok_or_else(|| KVError::InvalidSnapshot("session has no layers".to_string()))?;
+
+        for (idx, layer) in self.layers.iter().enumerate().skip(1) {
+            if layer.seq_len != first.seq_len
+                || layer.max_seq_len != first.max_seq_len
+                || layer.n_heads != first.n_heads
+                || layer.head_dim != first.head_dim
+                || layer.layout != first.layout
+            {
+                return Err(KVError::InvalidSnapshot(format!(
+                    "layer {idx} metadata does not match layer 0"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn write_u32<W: Write>(writer: &mut W, value: u32) -> Result<(), KVError> {
+    writer
+        .write_all(&value.to_le_bytes())
+        .map_err(|e| KVError::SnapshotIo(e.to_string()))
+}
+
+fn write_u64<W: Write>(writer: &mut W, value: usize) -> Result<(), KVError> {
+    let value = u64::try_from(value)
+        .map_err(|_| KVError::InvalidSnapshot("usize value does not fit in u64".to_string()))?;
+    writer
+        .write_all(&value.to_le_bytes())
+        .map_err(|e| KVError::SnapshotIo(e.to_string()))
+}
+
+fn read_u32<R: Read>(reader: &mut R) -> Result<u32, KVError> {
+    let mut bytes = [0u8; 4];
+    reader
+        .read_exact(&mut bytes)
+        .map_err(|e| KVError::SnapshotIo(e.to_string()))?;
+    Ok(u32::from_le_bytes(bytes))
+}
+
+fn read_usize<R: Read>(reader: &mut R, field: &str) -> Result<usize, KVError> {
+    let mut bytes = [0u8; 8];
+    reader
+        .read_exact(&mut bytes)
+        .map_err(|e| KVError::SnapshotIo(e.to_string()))?;
+    let value = u64::from_le_bytes(bytes);
+    usize::try_from(value).map_err(|_| {
+        KVError::InvalidSnapshot(format!("{field} value does not fit in usize: {value}"))
+    })
+}
+
+fn write_f32_slice<W: Write>(writer: &mut W, values: &[f32]) -> Result<(), KVError> {
+    for value in values {
+        writer
+            .write_all(&value.to_le_bytes())
+            .map_err(|e| KVError::SnapshotIo(e.to_string()))?;
+    }
+    Ok(())
+}
+
+fn read_f32_slice<R: Read>(reader: &mut R, values: &mut [f32]) -> Result<(), KVError> {
+    for value in values {
+        let mut bytes = [0u8; 4];
+        reader
+            .read_exact(&mut bytes)
+            .map_err(|e| KVError::SnapshotIo(e.to_string()))?;
+        *value = f32::from_le_bytes(bytes);
+    }
+    Ok(())
 }
 
 impl KvPager for SessionKVCache {
@@ -875,5 +1103,122 @@ mod tests {
             .unwrap();
 
         assert_eq!(session.seq_len(), 4);
+    }
+
+    #[test]
+    fn session_snapshot_roundtrips_by_sequence_layout() {
+        let mut session = SessionKVCache::new(2, 8, 2, 2, KVLayout::BySequence);
+        fill_session_with_distinct_tokens(&mut session, 3);
+
+        let mut bytes = Vec::new();
+        session.write_snapshot(&mut bytes).unwrap();
+        let restored = SessionKVCache::read_snapshot(bytes.as_slice()).unwrap();
+
+        assert_sessions_equal(&session, &restored);
+    }
+
+    #[test]
+    fn session_snapshot_roundtrips_by_head_layout() {
+        let mut session = SessionKVCache::new(2, 8, 2, 2, KVLayout::ByHead);
+        fill_session_with_distinct_tokens(&mut session, 3);
+
+        let mut bytes = Vec::new();
+        session.write_snapshot(&mut bytes).unwrap();
+        let restored = SessionKVCache::read_snapshot(bytes.as_slice()).unwrap();
+
+        assert_sessions_equal(&session, &restored);
+    }
+
+    #[test]
+    fn session_snapshot_roundtrips_transposed_layout() {
+        let mut session = SessionKVCache::new(2, 8, 2, 2, KVLayout::Transposed);
+        fill_session_with_distinct_tokens(&mut session, 3);
+
+        let mut bytes = Vec::new();
+        session.write_snapshot(&mut bytes).unwrap();
+        let restored = SessionKVCache::read_snapshot(bytes.as_slice()).unwrap();
+
+        assert_sessions_equal(&session, &restored);
+    }
+
+    #[test]
+    fn session_snapshot_persists_to_path() {
+        let mut session = SessionKVCache::new(2, 8, 2, 2, KVLayout::BySequence);
+        fill_session_with_distinct_tokens(&mut session, 2);
+
+        let path = std::env::temp_dir().join(format!(
+            "llama-rs-kv-snapshot-{}-{}.bin",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("unnamed")
+        ));
+
+        session.save_snapshot(&path).unwrap();
+        let restored = SessionKVCache::load_snapshot(&path).unwrap();
+        let _ = std::fs::remove_file(path);
+
+        assert_sessions_equal(&session, &restored);
+    }
+
+    #[test]
+    fn session_snapshot_rejects_bad_magic() {
+        let err = SessionKVCache::read_snapshot([0u8; 32].as_slice()).unwrap_err();
+        assert!(matches!(err, KVError::InvalidSnapshot(message) if message == "bad magic header"));
+    }
+
+    #[test]
+    fn session_snapshot_rejects_trailing_bytes() {
+        let mut session = SessionKVCache::new(1, 4, 1, 2, KVLayout::BySequence);
+        fill_session_with_distinct_tokens(&mut session, 1);
+
+        let mut bytes = Vec::new();
+        session.write_snapshot(&mut bytes).unwrap();
+        bytes.push(1);
+
+        let err = SessionKVCache::read_snapshot(bytes.as_slice()).unwrap_err();
+        assert!(
+            matches!(err, KVError::InvalidSnapshot(message) if message == "snapshot has trailing bytes")
+        );
+    }
+
+    fn fill_session_with_distinct_tokens(session: &mut SessionKVCache, token_count: usize) {
+        for seq in 0..token_count {
+            let mut k_owned = Vec::with_capacity(session.n_layers());
+            let mut v_owned = Vec::with_capacity(session.n_layers());
+
+            for layer_idx in 0..session.n_layers() {
+                let layer = session.layer(layer_idx).unwrap();
+                let width = layer.n_heads * layer.head_dim;
+                let base = (layer_idx * 100 + seq * 10) as f32;
+                k_owned.push((0..width).map(|i| base + i as f32).collect::<Vec<_>>());
+                v_owned.push(
+                    (0..width)
+                        .map(|i| base + 1_000.0 + i as f32)
+                        .collect::<Vec<_>>(),
+                );
+            }
+
+            let k_refs: Vec<&[f32]> = k_owned.iter().map(Vec::as_slice).collect();
+            let v_refs: Vec<&[f32]> = v_owned.iter().map(Vec::as_slice).collect();
+            session.append_token(&k_refs, &v_refs).unwrap();
+        }
+    }
+
+    fn assert_sessions_equal(expected: &SessionKVCache, actual: &SessionKVCache) {
+        assert_eq!(expected.n_layers(), actual.n_layers());
+        assert_eq!(expected.seq_len(), actual.seq_len());
+        assert_eq!(expected.memory_bytes(), actual.memory_bytes());
+        assert_eq!(expected.memory_used_bytes(), actual.memory_used_bytes());
+
+        for layer_idx in 0..expected.n_layers() {
+            let left = expected.layer(layer_idx).unwrap();
+            let right = actual.layer(layer_idx).unwrap();
+            assert_eq!(left.seq_len, right.seq_len);
+            assert_eq!(left.max_seq_len, right.max_seq_len);
+            assert_eq!(left.n_heads, right.n_heads);
+            assert_eq!(left.head_dim, right.head_dim);
+            assert_eq!(left.layout, right.layout);
+            assert_eq!(left.k, right.k);
+            assert_eq!(left.v, right.v);
+        }
     }
 }
