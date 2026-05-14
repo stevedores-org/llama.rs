@@ -104,6 +104,12 @@ pub fn validate_handoff(
 pub struct OrchestrationTask {
     pub id: String,
     pub role: AgentRole,
+    /// Upstream task ids that must complete before this one runs.
+    ///
+    /// **Order matters.** The executor receives dependency artifacts as a
+    /// slice in this declaration order, and contract validation runs against
+    /// `inputs[0]` — the *primary* handoff. Secondary deps are scheduling /
+    /// data inputs available to the executor but are not contract-validated.
     pub depends_on: Vec<String>,
 }
 

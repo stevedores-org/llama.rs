@@ -395,6 +395,10 @@ impl Tokenizer for WhitespaceTokenizer {
     }
 
     fn decode_token(&self, token: i32, state: &mut DecodingState) -> TokenizerResult<String> {
+        // WhitespaceTokenizer stores each piece (including whitespace runs)
+        // as its own vocab entry — no <0xNN> byte pieces, no implicit
+        // leading-space insertion, so emit raw bytes directly. BPE-style
+        // tokenizers still need parse_byte_piece / piece_to_bytes.
         let piece = self.decode_id(token)?;
         let emitted = state.append_bytes(piece.as_bytes())?;
         state.emitted_any = true;
