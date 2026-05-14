@@ -257,7 +257,10 @@ pub enum WorkflowError {
     Validation(ContractValidationError),
 }
 
-pub type RoleExecutor = fn(&Artifact) -> Artifact;
+// Executors receive every `depends_on` output in declaration order. Tasks
+// with no declared dependencies receive a single-element slice containing
+// the initial artifact.
+pub type RoleExecutor = fn(&[&Artifact]) -> Artifact;
 
 pub fn run_multi_role_workflow(
     nodes: &[WorkflowNode],
@@ -284,16 +287,20 @@ pub fn run_multi_role_workflow(
             .get(task_id.as_str())
             .expect("route only contains declared tasks");
 
-        let input = if node.task.depends_on.is_empty() {
-            initial.clone()
+        let inputs: Vec<&Artifact> = if node.task.depends_on.is_empty() {
+            vec![&initial]
         } else {
-            let first_dep = node.task.depends_on[0].as_str();
-            produced
-                .get(first_dep)
-                .cloned()
-                .ok_or_else(|| WorkflowError::MissingInput {
-                    task_id: node.task.id.clone(),
-                })?
+            let mut deps = Vec::with_capacity(node.task.depends_on.len());
+            for dep_id in &node.task.depends_on {
+                let artifact =
+                    produced
+                        .get(dep_id.as_str())
+                        .ok_or_else(|| WorkflowError::MissingInput {
+                            task_id: node.task.id.clone(),
+                        })?;
+                deps.push(artifact);
+            }
+            deps
         };
 
         let executor = executors
@@ -301,10 +308,13 @@ pub fn run_multi_role_workflow(
             .ok_or(WorkflowError::MissingExecutor {
                 role: node.task.role,
             })?;
-        let output = executor(&input);
+        let output = executor(&inputs);
 
+        // The contract describes the primary handoff (from `depends_on[0]`).
+        // Additional dependencies are scheduling/data inputs and are not
+        // validated against the contract.
         if let Some(contract) = &node.contract {
-            validate_handoff(contract, &input, &output).map_err(WorkflowError::Validation)?;
+            validate_handoff(contract, inputs[0], &output).map_err(WorkflowError::Validation)?;
         }
 
         produced.insert(node.task.id.clone(), output);
@@ -378,7 +388,7 @@ pub fn run_requirement_to_patch_example(requirement: &str) -> Result<MergeResult
                 depends_on: vec!["review".to_string(), "test".to_string()],
             },
             contract: Some(HandoffContract {
-                from: AgentRole::Fixer,
+                from: AgentRole::Reviewer,
                 to: AgentRole::Fixer,
                 input_kind: ArtifactKind::Review,
                 output_kind: ArtifactKind::Patch,
@@ -387,7 +397,8 @@ pub fn run_requirement_to_patch_example(requirement: &str) -> Result<MergeResult
         },
     ];
 
-    fn planner(input: &Artifact) -> Artifact {
+    fn planner(inputs: &[&Artifact]) -> Artifact {
+        let input = inputs[0];
         let mut artifact = Artifact::new(
             ArtifactKind::Plan,
             "plan",
@@ -402,7 +413,7 @@ pub fn run_requirement_to_patch_example(requirement: &str) -> Result<MergeResult
         artifact
     }
 
-    fn coder(_input: &Artifact) -> Artifact {
+    fn coder(_inputs: &[&Artifact]) -> Artifact {
         let mut artifact = Artifact::new(
             ArtifactKind::Patch,
             "initial patch",
@@ -414,7 +425,8 @@ pub fn run_requirement_to_patch_example(requirement: &str) -> Result<MergeResult
         artifact
     }
 
-    fn reviewer(input: &Artifact) -> Artifact {
+    fn reviewer(inputs: &[&Artifact]) -> Artifact {
+        let input = inputs[0];
         let mut artifact = Artifact::new(
             ArtifactKind::Review,
             "review notes",
@@ -429,7 +441,7 @@ pub fn run_requirement_to_patch_example(requirement: &str) -> Result<MergeResult
         artifact
     }
 
-    fn tester(_input: &Artifact) -> Artifact {
+    fn tester(_inputs: &[&Artifact]) -> Artifact {
         let mut artifact = Artifact::new(
             ArtifactKind::TestReport,
             "test report",
@@ -441,16 +453,22 @@ pub fn run_requirement_to_patch_example(requirement: &str) -> Result<MergeResult
         artifact
     }
 
-    fn fixer(input: &Artifact) -> Artifact {
+    fn fixer(inputs: &[&Artifact]) -> Artifact {
+        let review = inputs[0];
+        let test_status = inputs
+            .get(1)
+            .and_then(|t| t.fields.get("status"))
+            .map(String::as_str)
+            .unwrap_or("unknown");
         let mut artifact = Artifact::new(
             ArtifactKind::Patch,
             "final patch",
             format!(
-                "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn feature() -> bool {{ true }}\n# reason: {}",
-                input.body
+                "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn feature() -> bool {{ true }}\n# reason: {}\n# test_status: {}",
+                review.body, test_status
             ),
         );
-        let target = input
+        let target = review
             .fields
             .get("target")
             .cloned()
@@ -624,12 +642,19 @@ mod tests {
             .expect("run 2 should succeed");
 
         assert_eq!(run1, run2);
+        let merged_patch = run1
+            .merged
+            .get("src/lib.rs")
+            .map(String::as_str)
+            .expect("merged result has src/lib.rs");
         assert_eq!(
-            run1.merged.get("src/lib.rs").map(String::as_str),
-            Some(
-                "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn feature() -> bool { true }\n# reason: Need deterministic behavior for patch: initial patch"
-            )
+            merged_patch,
+            "diff --git a/src/lib.rs b/src/lib.rs\n+pub fn feature() -> bool { true }\n# reason: Need deterministic behavior for patch: initial patch\n# test_status: pass"
         );
+        // Regression: the Fixer must observe the Tester's status, not only
+        // the Reviewer's notes. If multi-dep inputs ever collapse back to
+        // dep[0], `test_status` will fall back to "unknown".
+        assert!(merged_patch.contains("# test_status: pass"));
         assert_eq!(run1.conflicts.len(), 1);
     }
 }
