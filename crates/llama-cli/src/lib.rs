@@ -185,11 +185,6 @@ impl TinyModel {
         let seq_len = kv_cache.seq_len;
 
         // 6. Attention: Q against all cached K, V
-        let layout = match kv_cache.layout {
-            llama_kv::KVLayout::BySequence => llama_models::KVLayout::BySequence,
-            llama_kv::KVLayout::ByHead => llama_models::KVLayout::ByHead,
-            llama_kv::KVLayout::Transposed => llama_models::KVLayout::Transposed,
-        };
         let attn_out = attention_decode(
             &q,
             &kv_cache.k,
@@ -198,7 +193,7 @@ impl TinyModel {
             kv_cache.max_seq_len,
             c.n_heads,
             c.head_dim,
-            layout,
+            kv_cache.layout,
         )?;
 
         // 7. Output projection + residual
@@ -253,11 +248,6 @@ impl TinyModel {
             // output. Multi-layer models would need full computation per token.
             if pos == token_ids.len() - 1 {
                 let seq_len = kv_cache.seq_len;
-                let layout = match kv_cache.layout {
-                    llama_kv::KVLayout::BySequence => llama_models::KVLayout::BySequence,
-                    llama_kv::KVLayout::ByHead => llama_models::KVLayout::ByHead,
-                    llama_kv::KVLayout::Transposed => llama_models::KVLayout::Transposed,
-                };
 
                 let attn_out = attention_decode(
                     &q,
@@ -267,7 +257,7 @@ impl TinyModel {
                     kv_cache.max_seq_len,
                     c.n_heads,
                     c.head_dim,
-                    layout,
+                    kv_cache.layout,
                 )?;
                 let attn_proj = Self::matvec(&attn_out, &self.w_o, d, d);
                 let x_after_attn: Vec<f32> =

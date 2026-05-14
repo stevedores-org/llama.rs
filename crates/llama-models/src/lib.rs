@@ -86,18 +86,7 @@ impl ModelWeights {
     }
 }
 
-/// Layout policy for KV cache memory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KVLayout {
-    /// Contiguous by sequence position: `[seq_len][heads][head_dim]`
-    BySequence,
-
-    /// Contiguous by head: `[heads][seq_len][head_dim]`
-    ByHead,
-
-    /// Transposed for attention: `[heads][head_dim][seq_len]`
-    Transposed,
-}
+pub use llama_kv::KVLayout;
 
 /// Root mean square normalization.
 pub fn rms_norm(input: &[f32], weight: &[f32], eps: f32) -> Result<Vec<f32>, ModelError> {
@@ -167,9 +156,18 @@ pub fn apply_rope(
     Ok(())
 }
 
-/// Single-step decode attention:
+/// Single-step decode attention against a populated KV cache.
+///
 /// - `query`: `[n_heads * head_dim]`
-/// - `keys`/`values`: backing storage for KV cache
+/// - `keys` / `values`: backing storage for the KV cache. The buffer must be
+///   pre-allocated to **full capacity** (`max_seq_len * n_heads * head_dim`),
+///   not trimmed to `seq_len * n_heads * head_dim`. The `ByHead` and
+///   `Transposed` layouts stride on `max_seq_len`, so a tighter slice would
+///   index past the end. Only positions `0..seq_len` are read.
+/// - `seq_len`: number of populated positions to attend over.
+/// - `max_seq_len`: cache capacity in positions (the value used at allocation).
+/// - `layout`: must match the layout the cache was written with; otherwise
+///   reads pick up wrong K/V values.
 /// - output: `[n_heads * head_dim]`
 #[allow(clippy::too_many_arguments)]
 pub fn attention_decode(
@@ -449,6 +447,34 @@ mod tests {
 
         // Each head should match its key/value
         assert_close(&out, &query, 1e-5);
+    }
+
+    #[test]
+    fn attention_decode_rejects_undersized_buffer() {
+        // Capacity contract: keys/values must be sized for max_seq_len, not
+        // just seq_len. A buffer trimmed to seq_len * n_heads * head_dim
+        // would index past the end under ByHead / Transposed strides.
+        let n_heads = 2;
+        let head_dim = 2;
+        let seq_len = 1;
+        let max_seq_len = 4;
+
+        let query = vec![0.0f32; n_heads * head_dim];
+        // Sized to seq_len, not max_seq_len — should be rejected.
+        let undersized = vec![0.0f32; seq_len * n_heads * head_dim];
+
+        let err = attention_decode(
+            &query,
+            &undersized,
+            &undersized,
+            seq_len,
+            max_seq_len,
+            n_heads,
+            head_dim,
+            KVLayout::ByHead,
+        )
+        .expect_err("undersized buffer must be rejected");
+        assert!(matches!(err, ModelError::Shape(_)));
     }
 
     #[test]
