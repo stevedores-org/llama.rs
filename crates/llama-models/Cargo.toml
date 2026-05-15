@@ -10,3 +10,4 @@ repository.workspace = true
 bytemuck = "1"
 safetensors = "0.5"
 thiserror.workspace = true
+llama-kv = { path = "../llama-kv" }

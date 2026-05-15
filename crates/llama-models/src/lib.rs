@@ -86,6 +86,8 @@ impl ModelWeights {
     }
 }
 
+pub use llama_kv::KVLayout;
+
 /// Root mean square normalization.
 pub fn rms_norm(input: &[f32], weight: &[f32], eps: f32) -> Result<Vec<f32>, ModelError> {
     if input.len() != weight.len() {
@@ -154,20 +156,33 @@ pub fn apply_rope(
     Ok(())
 }
 
-/// Single-step decode attention:
+/// Single-step decode attention against a populated KV cache.
+///
 /// - `query`: `[n_heads * head_dim]`
-/// - `keys`/`values`: `[seq_len * n_heads * head_dim]`
+/// - `keys` / `values`: backing storage for the KV cache. The buffer must be
+///   pre-allocated to **full capacity** (`max_seq_len * n_heads * head_dim`),
+///   not trimmed to `seq_len * n_heads * head_dim`. The `ByHead` and
+///   `Transposed` layouts stride on `max_seq_len`, so a tighter slice would
+///   index past the end. Only positions `0..seq_len` are read.
+/// - `seq_len`: number of populated positions to attend over.
+/// - `max_seq_len`: cache capacity in positions (the value used at allocation).
+/// - `layout`: must match the layout the cache was written with; otherwise
+///   reads pick up wrong K/V values.
 /// - output: `[n_heads * head_dim]`
+#[allow(clippy::too_many_arguments)]
 pub fn attention_decode(
     query: &[f32],
     keys: &[f32],
     values: &[f32],
     seq_len: usize,
+    max_seq_len: usize,
     n_heads: usize,
     head_dim: usize,
+    layout: KVLayout,
 ) -> Result<Vec<f32>, ModelError> {
     let q_expected = n_heads * head_dim;
-    let kv_expected = seq_len * n_heads * head_dim;
+    let kv_capacity = max_seq_len * n_heads * head_dim;
+
     if query.len() != q_expected {
         return Err(ModelError::Shape(format!(
             "query shape mismatch: expected {}, got {}",
@@ -175,10 +190,10 @@ pub fn attention_decode(
             query.len()
         )));
     }
-    if keys.len() != kv_expected || values.len() != kv_expected {
+    if keys.len() < kv_capacity || values.len() < kv_capacity {
         return Err(ModelError::Shape(format!(
-            "kv shape mismatch: expected {}, got k={}, v={}",
-            kv_expected,
+            "kv storage too small: expected capacity {}, got k={}, v={}",
+            kv_capacity,
             keys.len(),
             values.len()
         )));
@@ -187,24 +202,33 @@ pub fn attention_decode(
     let mut out = vec![0.0; q_expected];
     let scale = 1.0 / (head_dim as f32).sqrt();
 
+    let get_index = |seq: usize, head: usize, dim: usize| -> usize {
+        match layout {
+            KVLayout::BySequence => (seq * n_heads + head) * head_dim + dim,
+            KVLayout::ByHead => (head * max_seq_len + seq) * head_dim + dim,
+            KVLayout::Transposed => (head * head_dim + dim) * max_seq_len + seq,
+        }
+    };
+
     for h in 0..n_heads {
         let qh = &query[h * head_dim..(h + 1) * head_dim];
 
         let mut scores = vec![0.0f32; seq_len];
         for (t, score) in scores.iter_mut().enumerate() {
-            let kh_off = (t * n_heads + h) * head_dim;
-            let kh = &keys[kh_off..kh_off + head_dim];
-            let dot = qh.iter().zip(kh.iter()).map(|(&a, &b)| a * b).sum::<f32>();
+            let mut dot = 0.0f32;
+            for (i, &q_val) in qh.iter().enumerate().take(head_dim) {
+                let kh_idx = get_index(t, h, i);
+                dot += q_val * keys[kh_idx];
+            }
             *score = dot * scale;
         }
 
         let probs = softmax(&scores);
         for (t, &p) in probs.iter().enumerate() {
-            let vh_off = (t * n_heads + h) * head_dim;
-            let vh = &values[vh_off..vh_off + head_dim];
             let out_h = &mut out[h * head_dim..(h + 1) * head_dim];
-            for i in 0..head_dim {
-                out_h[i] += p * vh[i];
+            for (i, out_val) in out_h.iter_mut().enumerate().take(head_dim) {
+                let vh_idx = get_index(t, h, i);
+                *out_val += p * values[vh_idx];
             }
         }
     }
@@ -385,9 +409,72 @@ mod tests {
         let query = [1.0, 0.0];
         let keys = [1.0, 0.0, 0.0, 1.0]; // seq=2, heads=1, dim=2
         let values = [10.0, 0.0, 0.0, 20.0];
-        let out = attention_decode(&query, &keys, &values, 2, 1, 2).unwrap();
+        let out =
+            attention_decode(&query, &keys, &values, 2, 2, 1, 2, KVLayout::BySequence).unwrap();
         let expected = [6.697615, 6.60477];
         assert_close(&out, &expected, 1e-5);
+    }
+
+    #[test]
+    fn attention_supports_by_head_layout() {
+        let query = [1.0, 0.0, 0.0, 1.0]; // 2 heads, dim=2
+        let n_heads = 2;
+        let head_dim = 2;
+        let seq_len = 1;
+        let max_seq_len = 2;
+
+        // ByHead: [heads][max_seq_len][head_dim]
+        // h0: [[1,0], [0,0]], h1: [[0,1], [0,0]]
+        let mut keys = vec![0.0; n_heads * max_seq_len * head_dim];
+        keys[0] = 1.0;
+        keys[1] = 0.0; // h0, s0, d0, d1
+        keys[4] = 0.0;
+        keys[5] = 1.0; // h1, s0, d0, d1
+
+        let values = keys.clone();
+
+        let out = attention_decode(
+            &query,
+            &keys,
+            &values,
+            seq_len,
+            max_seq_len,
+            n_heads,
+            head_dim,
+            KVLayout::ByHead,
+        )
+        .unwrap();
+
+        // Each head should match its key/value
+        assert_close(&out, &query, 1e-5);
+    }
+
+    #[test]
+    fn attention_decode_rejects_undersized_buffer() {
+        // Capacity contract: keys/values must be sized for max_seq_len, not
+        // just seq_len. A buffer trimmed to seq_len * n_heads * head_dim
+        // would index past the end under ByHead / Transposed strides.
+        let n_heads = 2;
+        let head_dim = 2;
+        let seq_len = 1;
+        let max_seq_len = 4;
+
+        let query = vec![0.0f32; n_heads * head_dim];
+        // Sized to seq_len, not max_seq_len — should be rejected.
+        let undersized = vec![0.0f32; seq_len * n_heads * head_dim];
+
+        let err = attention_decode(
+            &query,
+            &undersized,
+            &undersized,
+            seq_len,
+            max_seq_len,
+            n_heads,
+            head_dim,
+            KVLayout::ByHead,
+        )
+        .expect_err("undersized buffer must be rejected");
+        assert!(matches!(err, ModelError::Shape(_)));
     }
 
     #[test]
@@ -465,7 +552,8 @@ mod tests {
         let query = [1.0, 0.0];
         let keys = [1.0, 0.0]; // seq=1, heads=1, dim=2
         let values = [3.0, 7.0];
-        let out = attention_decode(&query, &keys, &values, 1, 1, 2).unwrap();
+        let out =
+            attention_decode(&query, &keys, &values, 1, 1, 1, 2, KVLayout::BySequence).unwrap();
         assert_close(&out, &values, 1e-5);
     }
 

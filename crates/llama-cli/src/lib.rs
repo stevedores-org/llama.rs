@@ -183,11 +183,18 @@ impl TinyModel {
         kv_cache.append_token(&k, &v)?;
 
         let seq_len = kv_cache.seq_len;
-        let keys = &kv_cache.k[..seq_len * d];
-        let values = &kv_cache.v[..seq_len * d];
 
         // 6. Attention: Q against all cached K, V
-        let attn_out = attention_decode(&q, keys, values, seq_len, c.n_heads, c.head_dim)?;
+        let attn_out = attention_decode(
+            &q,
+            &kv_cache.k,
+            &kv_cache.v,
+            seq_len,
+            kv_cache.max_seq_len,
+            c.n_heads,
+            c.head_dim,
+            kv_cache.layout,
+        )?;
 
         // 7. Output projection + residual
         let attn_proj = Self::matvec(&attn_out, &self.w_o, d, d);
@@ -241,10 +248,17 @@ impl TinyModel {
             // output. Multi-layer models would need full computation per token.
             if pos == token_ids.len() - 1 {
                 let seq_len = kv_cache.seq_len;
-                let keys = &kv_cache.k[..seq_len * d];
-                let values = &kv_cache.v[..seq_len * d];
 
-                let attn_out = attention_decode(&q, keys, values, seq_len, c.n_heads, c.head_dim)?;
+                let attn_out = attention_decode(
+                    &q,
+                    &kv_cache.k,
+                    &kv_cache.v,
+                    seq_len,
+                    kv_cache.max_seq_len,
+                    c.n_heads,
+                    c.head_dim,
+                    kv_cache.layout,
+                )?;
                 let attn_proj = Self::matvec(&attn_out, &self.w_o, d, d);
                 let x_after_attn: Vec<f32> =
                     x.iter().zip(attn_proj.iter()).map(|(a, b)| a + b).collect();

@@ -351,27 +351,25 @@ impl BackendParityGate {
 
 #[derive(Debug)]
 struct ToyModel {
-    embeddings: [[f32; 2]; 8],
-    out_proj: [[f32; 8]; 2],
+    embeddings: Vec<f32>, // [vocab_size * dim]
+    out_proj: Vec<f32>,   // [dim * vocab_size]
+    dim: usize,
+    vocab_size: usize,
 }
 
 impl Default for ToyModel {
     fn default() -> Self {
+        let embeddings = vec![
+            0.4, -0.2, 0.1, 0.9, 0.8, 0.2, -0.5, 0.7, 0.3, -0.9, -0.2, -0.3, 0.6, 0.4, -0.7, 0.5,
+        ];
+        let out_proj = vec![
+            0.3, -0.1, 0.2, 0.5, -0.4, 0.1, 0.2, -0.3, -0.2, 0.6, -0.3, 0.1, 0.4, -0.5, 0.2, 0.3,
+        ];
         Self {
-            embeddings: [
-                [0.4, -0.2],
-                [0.1, 0.9],
-                [0.8, 0.2],
-                [-0.5, 0.7],
-                [0.3, -0.9],
-                [-0.2, -0.3],
-                [0.6, 0.4],
-                [-0.7, 0.5],
-            ],
-            out_proj: [
-                [0.3, -0.1, 0.2, 0.5, -0.4, 0.1, 0.2, -0.3],
-                [-0.2, 0.6, -0.3, 0.1, 0.4, -0.5, 0.2, 0.3],
-            ],
+            embeddings,
+            out_proj,
+            dim: 2,
+            vocab_size: 8,
         }
     }
 }
@@ -388,8 +386,9 @@ impl ToyModel {
         backend: RuntimeBackend,
     ) -> std::result::Result<Vec<f32>, RuntimeError> {
         let seq_len = prompt.len();
-        let mut keys = Vec::with_capacity(seq_len * 2);
-        let mut values = Vec::with_capacity(seq_len * 2);
+        let d = self.dim;
+        let mut keys = Vec::with_capacity(seq_len * d);
+        let mut values = Vec::with_capacity(seq_len * d);
 
         for (pos, &tok) in prompt.iter().enumerate() {
             let mut kv = self.token_vec(tok)?;
@@ -403,8 +402,8 @@ impl ToyModel {
         apply_seed_jitter(&mut q, seed, seq_len - 1);
         apply_position_rotation(&mut q, seq_len - 1);
 
-        let ctx = attention_single_head(&q, &keys, &values, seq_len, 2, backend);
-        Ok(project_logits(&ctx, &self.out_proj))
+        let ctx = attention_single_head(&q, &keys, &values, seq_len, d, backend);
+        Ok(project_logits(&ctx, &self.out_proj, self.vocab_size))
     }
 
     fn prefill_then_decode(
@@ -413,10 +412,11 @@ impl ToyModel {
         inject_off_by_one: bool,
     ) -> std::result::Result<Vec<f32>, RuntimeError> {
         let prefill_len = prompt.len() - 1;
-        let mut cache = LayerKVCache::new(prompt.len(), 1, 2, KVLayout::BySequence);
+        let d = self.dim;
+        let mut cache = LayerKVCache::new(prompt.len(), 1, d, KVLayout::BySequence);
 
-        let mut k_prefill = Vec::with_capacity(prefill_len * 2);
-        let mut v_prefill = Vec::with_capacity(prefill_len * 2);
+        let mut k_prefill = Vec::with_capacity(prefill_len * d);
+        let mut v_prefill = Vec::with_capacity(prefill_len * d);
         for (pos, &tok) in prompt[..prefill_len].iter().enumerate() {
             let mut kv = self.token_vec(tok)?;
             apply_position_rotation(&mut kv, pos);
@@ -439,28 +439,34 @@ impl ToyModel {
         cache.append_token(&kv_last, &kv_last)?;
 
         let seq_len = cache.seq_len;
-        let keys = cache.k[..seq_len * 2].to_vec();
-        let values = cache.v[..seq_len * 2].to_vec();
-        let ctx = attention_single_head(&q, &keys, &values, seq_len, 2, RuntimeBackend::Cpu);
-        Ok(project_logits(&ctx, &self.out_proj))
+        let keys = cache.k[..seq_len * d].to_vec();
+        let values = cache.v[..seq_len * d].to_vec();
+        let ctx = attention_single_head(&q, &keys, &values, seq_len, d, RuntimeBackend::Cpu);
+        Ok(project_logits(&ctx, &self.out_proj, self.vocab_size))
     }
 
-    fn token_vec(&self, token: i32) -> std::result::Result<[f32; 2], RuntimeError> {
+    fn token_vec(&self, token: i32) -> std::result::Result<Vec<f32>, RuntimeError> {
         let idx = usize::try_from(token).map_err(|_| RuntimeError::InvalidToken(token))?;
-        self.embeddings
-            .get(idx)
-            .copied()
-            .ok_or(RuntimeError::InvalidToken(token))
+        if idx >= self.vocab_size {
+            return Err(RuntimeError::InvalidToken(token));
+        }
+        let offset = idx * self.dim;
+        Ok(self.embeddings[offset..offset + self.dim].to_vec())
     }
 }
 
-fn apply_seed_jitter(v: &mut [f32; 2], seed: u64, position: usize) {
+fn apply_seed_jitter(v: &mut [f32], seed: u64, position: usize) {
     if seed == 0 {
         return;
     }
     let jitter = deterministic_jitter(seed, position) * 0.01;
-    v[0] += jitter;
-    v[1] -= jitter;
+    for (i, val) in v.iter_mut().enumerate() {
+        if i % 2 == 0 {
+            *val += jitter;
+        } else {
+            *val -= jitter;
+        }
+    }
 }
 
 fn deterministic_jitter(seed: u64, position: usize) -> f32 {
@@ -472,23 +478,27 @@ fn deterministic_jitter(seed: u64, position: usize) -> f32 {
     (top as f32 / u32::MAX as f32) - 0.5
 }
 
-fn apply_position_rotation(v: &mut [f32; 2], position: usize) {
+fn apply_position_rotation(v: &mut [f32], position: usize) {
     let theta = position as f32 * 0.15;
     let (sin_t, cos_t) = theta.sin_cos();
-    let x0 = v[0];
-    let x1 = v[1];
-    v[0] = x0 * cos_t - x1 * sin_t;
-    v[1] = x0 * sin_t + x1 * cos_t;
+    for i in (0..v.len()).step_by(2) {
+        if i + 1 < v.len() {
+            let x0 = v[i];
+            let x1 = v[i + 1];
+            v[i] = x0 * cos_t - x1 * sin_t;
+            v[i + 1] = x0 * sin_t + x1 * cos_t;
+        }
+    }
 }
 
 fn attention_single_head(
-    q: &[f32; 2],
+    q: &[f32],
     keys: &[f32],
     values: &[f32],
     seq_len: usize,
     dim: usize,
     backend: RuntimeBackend,
-) -> [f32; 2] {
+) -> Vec<f32> {
     match backend {
         RuntimeBackend::Cpu => attention_single_head_cpu(q, keys, values, seq_len, dim),
         RuntimeBackend::Metal => attention_single_head_metal(q, keys, values, seq_len, dim),
@@ -496,27 +506,31 @@ fn attention_single_head(
 }
 
 fn attention_single_head_cpu(
-    q: &[f32; 2],
+    q: &[f32],
     keys: &[f32],
     values: &[f32],
     seq_len: usize,
     dim: usize,
-) -> [f32; 2] {
-    assert_eq!(dim, 2, "ToyModel supports only dim=2");
+) -> Vec<f32> {
     let scale = 1.0 / (dim as f32).sqrt();
 
     let mut scores = vec![0.0f32; seq_len];
     for t in 0..seq_len {
         let k = &keys[t * dim..t * dim + dim];
-        scores[t] = (q[0] * k[0] + q[1] * k[1]) * scale;
+        let mut dot = 0.0f32;
+        for i in 0..dim {
+            dot += q[i] * k[i];
+        }
+        scores[t] = dot * scale;
     }
     let probs = softmax(&scores);
 
-    let mut out = [0.0f32; 2];
+    let mut out = vec![0.0f32; dim];
     for (t, &p) in probs.iter().enumerate() {
         let v = &values[t * dim..t * dim + dim];
-        out[0] += p * v[0];
-        out[1] += p * v[1];
+        for i in 0..dim {
+            out[i] += p * v[i];
+        }
     }
     out
 }
@@ -524,19 +538,24 @@ fn attention_single_head_cpu(
 // Mirrors CPU semantics while serving as the Metal parity path until real
 // Metal kernels are wired in.
 fn attention_single_head_metal(
-    q: &[f32; 2],
+    q: &[f32],
     keys: &[f32],
     values: &[f32],
     seq_len: usize,
     dim: usize,
-) -> [f32; 2] {
+) -> Vec<f32> {
     attention_single_head_cpu(q, keys, values, seq_len, dim)
 }
 
-fn project_logits(ctx: &[f32; 2], out_proj: &[[f32; 8]; 2]) -> Vec<f32> {
-    let mut logits = vec![0.0f32; 8];
-    for (i, logit) in logits.iter_mut().enumerate().take(8) {
-        *logit = ctx[0] * out_proj[0][i] + ctx[1] * out_proj[1][i];
+fn project_logits(ctx: &[f32], out_proj: &[f32], vocab_size: usize) -> Vec<f32> {
+    let dim = ctx.len();
+    let mut logits = vec![0.0f32; vocab_size];
+    for i in 0..vocab_size {
+        let mut acc = 0.0f32;
+        for j in 0..dim {
+            acc += ctx[j] * out_proj[j * vocab_size + i];
+        }
+        logits[i] = acc;
     }
     logits
 }
@@ -589,7 +608,8 @@ mod tests {
     fn mock_engine_tokenize_roundtrip() {
         let engine = MockEngine::new();
         let tokens = engine.tokenize("hello world").unwrap();
-        assert_eq!(tokens.len(), 2);
+        // "hello", " ", "world"
+        assert_eq!(tokens.len(), 3);
 
         let text = engine.detokenize(&tokens).unwrap();
         assert_eq!(text, "hello world");
@@ -602,7 +622,8 @@ mod tests {
 
         let tokens = engine.tokenize("hello world").unwrap();
         let prefill = engine.prefill(&mut session, &tokens).unwrap();
-        assert_eq!(prefill.tokens_processed, 2);
+        // "hello", " ", "world"
+        assert_eq!(prefill.tokens_processed, 3);
 
         let result = engine.decode(&mut session).unwrap();
         assert!(result.token >= 0);
